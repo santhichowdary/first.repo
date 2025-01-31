@@ -132,6 +132,56 @@ Classic ELB: Calls describe_instance_health() to check if any EC2 instances are 
 Lists all unused Load Balancers.
 Asks the user:
 
+
+
+An Elastic Load Balancer (ELB) is an AWS service that automatically distributes incoming application traffic across multiple targets, such as EC2 instances, containers, IP addresses, or Lambda functions. The purpose of an ELB is to ensure high availability and fault tolerance by balancing the load across these resources, preventing any single instance from being overwhelmed.
+
+AWS provides different types of Load Balancers:
+
+Application Load Balancer (ALB): This is ideal for HTTP/HTTPS traffic and provides advanced routing capabilities (like path-based or host-based routing).
+Network Load Balancer (NLB): This handles high-throughput and low-latency traffic. It is designed to handle millions of requests per second while maintaining high availability.
+Classic Load Balancer (CLB): This is the older type of load balancer, suitable for both HTTP/HTTPS and TCP traffic. It is simpler but lacks some of the advanced features of ALB and NLB.
+Why Are We Writing This Script?
+The goal of this script is to automate the process of identifying and deleting unused Load Balancers within AWS. Here’s why this is useful:
+
+Cost Efficiency: Load Balancers incur charges based on their usage and the number of hours they are running. If there are any unused or unnecessary load balancers still active, they could lead to unnecessary costs.
+
+Resource Cleanup: As infrastructure evolves, old or unused resources (like load balancers) might be left behind. These unused resources can clutter your environment and potentially cause management complexity.
+
+Automation: Instead of manually checking each load balancer and deleting unused ones, this script automates the entire process. It ensures that you can quickly and reliably clean up your environment, saving time and effort.
+
+Prevention of Potential Errors: If unused load balancers are left behind for too long, they can interfere with monitoring or debugging processes. Cleaning up ensures that only relevant and in-use resources are consuming time and attention.
+
+What Does the Script Perform Internally?
+Let’s break down the key actions the script performs:
+
+Step 1: Retrieve All Load Balancers
+ALBs/NLBs: The script first calls describe_load_balancers() to get a list of all ALBs and NLBs (using elb_client.describe_load_balancers()).
+Classic ELBs: It then calls a different API for Classic Load Balancers (classic_elb_client.describe_load_balancers()).
+The script fetches both sets of data (ALBs/NLBs and Classic ELBs) so it can work with all types of load balancers present in your environment.
+
+Step 2: Check if Each Load Balancer Is In Use
+The script then checks if each load balancer is actively being used:
+
+For ALBs and NLBs: It calls check_target_groups() to check if there are any active target groups linked to the load balancer.
+Target groups represent the backend instances or resources that the load balancer is forwarding traffic to. If a load balancer has no target groups, it’s considered "unused."
+For Classic ELBs: It calls check_classic_elb_instances() to check if any EC2 instances are associated with the Classic ELB.
+Instances: If no EC2 instances are registered, the load balancer is considered unused.
+Step 3: Collect Unused Load Balancers
+Once the script determines that a load balancer is unused (either by lack of target groups for ALBs/NLBs or lack of instances for Classic ELBs), it adds that load balancer to a list of deletable load balancers.
+
+Step 4: User Confirmation
+The script will then ask the user for confirmation:
+
+It displays a list of unused load balancers and prompts the user to type delete to confirm that they want to delete these load balancers.
+If the user types anything other than delete, the script cancels the operation and exits without deleting anything.
+Step 5: Deleting Unused Load Balancers
+If the user confirms with delete, the script proceeds to delete the unused load balancers:
+
+For ALBs/NLBs: It calls delete_load_balancer() for each unused load balancer identified earlier.
+For Classic ELBs: It calls delete_classic_elb() for each Classic ELB.
+Once a load balancer is successfully deleted, the script prints a confirmation message
+
 Type 'delete' to confirm deletion of all unused Load Balancers or 'no' to cancel: 
 If the user does not confirm, it cancels the operation safely.
 ✅ Step 4: Delete the Unused Load Balancers
