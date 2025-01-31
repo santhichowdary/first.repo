@@ -2,3 +2,62 @@ hi how
 hlo
 are you
  hey sam
+
+
+import boto3
+
+def describe_nat_gateways():
+    ec2_client = boto3.client('ec2')
+    response = ec2_client.describe_nat_gateways()
+    return response['NatGateways']
+
+def check_route_tables(nat_gateway_id):
+    ec2_client = boto3.client('ec2')
+    response = ec2_client.describe_route_tables(
+        Filters=[{'Name': 'route.nat-gateway-id', 'Values': [nat_gateway_id]}]
+    )
+    return response['RouteTables']
+
+def delete_nat_gateway(nat_gateway_id):
+    ec2_client = boto3.client('ec2')
+    ec2_client.delete_nat_gateway(NatGatewayId=nat_gateway_id)
+    print(f"Deleted NAT Gateway with ID: {nat_gateway_id}")
+
+def release_elastic_ip(allocation_id):
+    ec2_client = boto3.client('ec2')
+    ec2_client.release_address(AllocationId=allocation_id)
+    print(f"Released Elastic IP with Allocation ID: {allocation_id}")
+
+def main():
+    nat_gateways = describe_nat_gateways()
+    if not nat_gateways:
+        print("No NAT Gateways found.")
+        return
+
+    print("Found the following NAT Gateways:")
+    for nat_gateway in nat_gateways:
+        nat_gateway_id = nat_gateway['NatGatewayId']
+        allocation_id = nat_gateway['NatGatewayAddresses'][0]['AllocationId']
+        route_tables = check_route_tables(nat_gateway_id)
+        
+        if route_tables:
+            print(f"NAT Gateway ID: {nat_gateway_id}, State: {nat_gateway['State']}, Elastic IP: {allocation_id}, Route Tables: {len(route_tables)}")
+        else:
+            print(f"NAT Gateway ID: {nat_gateway_id}, State: {nat_gateway['State']}, Elastic IP: {allocation_id}, No associated Route Tables")
+    
+    confirmation = input("Type 'delete' to confirm deletion of all listed NAT Gateways with no associated Route Tables or 'no' to cancel: ")
+
+    if confirmation.lower() == 'delete':
+        for nat_gateway in nat_gateways:
+            nat_gateway_id = nat_gateway['NatGatewayId']
+            allocation_id = nat_gateway['NatGatewayAddresses'][0]['AllocationId']
+            route_tables = check_route_tables(nat_gateway_id)
+            
+            if not route_tables:
+                delete_nat_gateway(nat_gateway_id)
+                release_elastic_ip(allocation_id)
+    else:
+        print("Deletion cancelled.")
+
+if __name__ == "__main__":
+    main()
