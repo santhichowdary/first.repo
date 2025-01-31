@@ -1,0 +1,139 @@
+import boto3
+import botocore.exceptions
+
+def describe_load_balancers():
+    """Retrieve all Load Balancers (ALB, NLB, CLB)"""
+    elb_client = boto3.client('elbv2')  # For ALB & NLB
+    classic_elb_client = boto3.client('elb')  # For Classic ELB
+
+    try:
+        alb_nlb_response = elb_client.describe_load_balancers()
+        alb_nlb_load_balancers = alb_nlb_response['LoadBalancers']
+    except botocore.exceptions.ClientError as e:
+        print(f"Error retrieving ALB/NLBs: {e}")
+        alb_nlb_load_balancers = []
+
+    try:
+        classic_response = classic_elb_client.describe_load_balancers()
+        classic_load_balancers = classic_response['LoadBalancerDescriptions']
+    except botocore.exceptions.ClientError as e:
+        print(f"Error retrieving Classic ELBs: {e}")
+        classic_load_balancers = []
+
+    return alb_nlb_load_balancers, classic_load_balancers
+
+def check_target_groups(load_balancer_arn):
+    """Check if an ALB/NLB has active target groups (meaning it's in use)"""
+    elb_client = boto3.client('elbv2')
+
+    try:
+        response = elb_client.describe_target_groups(LoadBalancerArn=load_balancer_arn)
+        return response['TargetGroups']
+    except botocore.exceptions.ClientError:
+        return []
+
+def check_classic_elb_instances(elb_name):
+    """Check if a Classic ELB has active instances (meaning it's in use)"""
+    classic_elb_client = boto3.client('elb')
+
+    try:
+        response = classic_elb_client.describe_instance_health(LoadBalancerName=elb_name)
+        return response['InstanceStates']
+    except botocore.exceptions.ClientError:
+        return []
+
+def delete_load_balancer(load_balancer_arn):
+    """Delete an ALB/NLB"""
+    elb_client = boto3.client('elbv2')
+
+    try:
+        elb_client.delete_load_balancer(LoadBalancerArn=load_balancer_arn)
+        print(f"Deleted Load Balancer: {load_balancer_arn}")
+    except botocore.exceptions.ClientError as e:
+        print(f"Error deleting Load Balancer {load_balancer_arn}: {e}")
+
+def delete_classic_elb(elb_name):
+    """Delete a Classic ELB"""
+    classic_elb_client = boto3.client('elb')
+
+    try:
+        classic_elb_client.delete_load_balancer(LoadBalancerName=elb_name)
+        print(f"Deleted Classic Load Balancer: {elb_name}")
+    except botocore.exceptions.ClientError as e:
+        print(f"Error deleting Classic Load Balancer {elb_name}: {e}")
+
+def main():
+    alb_nlb_load_balancers, classic_load_balancers = describe_load_balancers()
+
+    if not alb_nlb_load_balancers and not classic_load_balancers:
+        print("No Load Balancers found.")
+        return
+
+    deletable_load_balancers = []
+
+    print("\nFound the following Load Balancers:\n")
+
+    # Process ALB & NLB
+    for lb in alb_nlb_load_balancers:
+        lb_arn = lb['LoadBalancerArn']
+        lb_name = lb['LoadBalancerName']
+        lb_type = lb['Type']
+
+        target_groups = check_target_groups(lb_arn)
+        in_use = len(target_groups) > 0
+
+        print(f"{lb_type} - Name: {lb_name}, ARN: {lb_arn}, {'In Use' if in_use else 'Unused'}")
+
+        if not in_use:
+            deletable_load_balancers.append(('ALB_NLB', lb_arn))
+
+    # Process Classic ELBs
+    for lb in classic_load_balancers:
+        lb_name = lb['LoadBalancerName']
+
+        instances = check_classic_elb_instances(lb_name)
+        in_use = len(instances) > 0
+
+        print(f"Classic ELB - Name: {lb_name}, {'In Use' if in_use else 'Unused'}")
+
+        if not in_use:
+            deletable_load_balancers.append(('CLB', lb_name))
+
+    if not deletable_load_balancers:
+        print("\nNo unused Load Balancers found for deletion.")
+        return
+
+    confirm = input("\nType 'delete' to confirm deletion of all unused Load Balancers or 'no' to cancel: ").strip().lower()
+
+    if confirm != 'delete':
+        print("Operation canceled.")
+        return
+
+    for lb_type, lb_id in deletable_load_balancers:
+        if lb_type == 'ALB_NLB':
+            delete_load_balancer(lb_id)
+        elif lb_type == 'CLB':
+            delete_classic_elb(lb_id)
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+How This Script Works
+✅ Step 1: Get All Load Balancers
+Uses describe_load_balancers() to get Application Load Balancers (ALB), Network Load Balancers (NLB), and Classic Load Balancers (CLB).
+Calls both elbv2 (for ALB/NLB) and elb (for Classic ELB).
+✅ Step 2: Check If the Load Balancer Is In Use
+ALB/NLB: Calls describe_target_groups() to see if any target groups are linked (meaning it's still needed).
+Classic ELB: Calls describe_instance_health() to check if any EC2 instances are registered.
+✅ Step 3: Ask for Confirmation
+Lists all unused Load Balancers.
+Asks the user:
+
+Type 'delete' to confirm deletion of all unused Load Balancers or 'no' to cancel: 
+If the user does not confirm, it cancels the operation safely.
+✅ Step 4: Delete the Unused Load Balancers
+If ALB/NLB, calls delete_load_balancer()
+If Classic ELB, calls delete_classic_elb()
