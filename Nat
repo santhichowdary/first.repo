@@ -101,6 +101,146 @@ Scenario 2: NAT Gateway is already deleted
 ✔️ Script will skip deleting the NAT Gateway.
 ✔️ If the Elastic IP no longer exists, it won’t crash, just logs a message and moves on.
 
+
+
+
+
+
+
+import boto3
+import botocore.exceptions
+import time
+from botocore.exceptions import ClientError
+
+# Specify your AWS region here
+AWS_REGION = 'us-east-1'  # Example: 'us-west-2', 'us-east-1'
+
+def describe_nat_gateways():
+    """Fetches all NAT Gateways from AWS."""
+    ec2_client = boto3.client('ec2', region_name=AWS_REGION)
+    response = ec2_client.describe_nat_gateways()
+    return response['NatGateways']
+
+def check_route_tables(nat_gateway_id):
+    """Checks if a NAT Gateway is associated with any route tables."""
+    ec2_client = boto3.client('ec2', region_name=AWS_REGION)
+    response = ec2_client.describe_route_tables(
+        Filters=[{'Name': 'route.nat-gateway-id', 'Values': [nat_gateway_id]}]
+    )
+    return response['RouteTables']
+
+def delete_nat_gateway(nat_gateway_id):
+    """Deletes the specified NAT Gateway."""
+    ec2_client = boto3.client('ec2', region_name=AWS_REGION)
+    try:
+        ec2_client.delete_nat_gateway(NatGatewayId=nat_gateway_id)
+        print(f" Deleted NAT Gateway with ID: {nat_gateway_id}")
+    except ClientError as e:
+        print(f"Error deleting NAT Gateway {nat_gateway_id}: {e}")
+
+def wait_for_nat_deletion(nat_gateway_id):
+    """Waits for NAT Gateway to be fully deleted before releasing the Elastic IP."""
+    ec2_client = boto3.client('ec2', region_name=AWS_REGION)
+    print(f" Waiting for NAT Gateway {nat_gateway_id} to be deleted...")
+    
+    while True:
+        try:
+            response = ec2_client.describe_nat_gateways(
+                Filters=[{'Name': 'nat-gateway-id', 'Values': [nat_gateway_id]}]
+            )
+            if not response['NatGateways'] or response['NatGateways'][0]['State'] == 'deleted':
+                print(f" NAT Gateway {nat_gateway_id} is fully deleted.")
+                break
+        except ClientError as e:
+            print(f" Error checking NAT Gateway status: {e}")
+            break
+        time.sleep(10)  # Check every 10 seconds
+
+def release_elastic_ip(allocation_id):
+    """Releases the specified Elastic IP."""
+    ec2_client = boto3.client('ec2', region_name=AWS_REGION)
+    try:
+        ec2_client.release_address(AllocationId=allocation_id)
+        print(f" Released Elastic IP with Allocation ID: {allocation_id}")
+    except ClientError as e:
+        print(f" Error releasing Elastic IP {allocation_id}: {e}")
+
+def get_nat_details_from_file(filename):
+    """Reads NAT Gateway IDs from a file and fetches details."""
+    try:
+        with open(filename, 'r') as file:
+            nat_ids = [line.strip() for line in file.readlines()]
+    except FileNotFoundError:
+        print(f" Error: File '{filename}' not found.")
+        return None
+
+    if not nat_ids:
+        print(" Error: The input file is empty.")
+        return None
+
+    all_nat_gateways = describe_nat_gateways()
+    matched_gateways = []
+
+    print("\n NAT Gateway Details from Input File:\n")
+
+    for nat_gateway in all_nat_gateways:
+        nat_gateway_id = nat_gateway['NatGatewayId']
+        state = nat_gateway['State']
+        allocation_id = nat_gateway.get('NatGatewayAddresses', [{}])[0].get('AllocationId')
+
+        if nat_gateway_id in nat_ids:
+            route_tables = check_route_tables(nat_gateway_id)
+            print(f" NAT Gateway ID: {nat_gateway_id}, State: {state}, Elastic IP: {allocation_id}, "
+                  f"{'No associated Route Tables' if not route_tables else 'In use'}")
+
+            if state == 'deleted' or route_tables:
+                print(f" Skipping NAT Gateway {nat_gateway_id} (Already deleted or in use)\n")
+            else:
+                matched_gateways.append((nat_gateway_id, allocation_id))
+
+    return matched_gateways
+
+def main():
+    """Main function to execute the script."""
+    
+    # Step 1: Display all NAT Gateways
+    print("\n All NAT Gateways in AWS Account:\n")
+    all_nat_gateways = describe_nat_gateways()
+    for nat_gateway in all_nat_gateways:
+        nat_gateway_id = nat_gateway['NatGatewayId']
+        state = nat_gateway['State']
+        allocation_id = nat_gateway.get('NatGatewayAddresses', [{}])[0].get('AllocationId')
+        print(f"🔹 NAT Gateway ID: {nat_gateway_id}, State: {state}, Elastic IP: {allocation_id if allocation_id else 'None'}")
+
+    # Step 2: Get input file and filter deletable NAT Gateways
+    filename = input("\n📂 Enter the filename containing NAT Gateway IDs to delete: ").strip()
+    deletable_gateways = get_nat_details_from_file(filename)
+
+    if not deletable_gateways:
+        print("\n No NAT Gateways available for deletion.")
+        return
+
+    # Ask for confirmation before deletion
+    confirm = input("\n Type 'delete' to confirm deletion or 'no' to cancel: ").strip().lower()
+
+    if confirm != 'delete':
+        print(" Operation canceled.")
+        return
+
+    # Step 3: First, delete the NAT Gateways
+    for nat_gateway_id, allocation_id in deletable_gateways:
+        delete_nat_gateway(nat_gateway_id)
+
+    # Step 4: Wait until all NAT Gateways are deleted before releasing Elastic IPs
+    for nat_gateway_id, allocation_id in deletable_gateways:
+        wait_for_nat_deletion(nat_gateway_id)
+        if allocation_id:
+            release_elastic_ip(allocation_id)
+
+if __name__ == "__main__":
+    main()
+
+
 Scenario 3: NAT Gateway is still associated with route tables
 ✔️ Script will not delete it and just print a message.
 
