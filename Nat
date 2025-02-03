@@ -102,8 +102,8 @@ Scenario 2: NAT Gateway is already deleted
 ✔️ If the Elastic IP no longer exists, it won’t crash, just logs a message and moves on.
 
 
-
-
+Scenario 3: NAT Gateway is still associated with route tables
+✔️ Script will not delete it and just print a message.
 
 
 
@@ -210,10 +210,10 @@ def main():
         nat_gateway_id = nat_gateway['NatGatewayId']
         state = nat_gateway['State']
         allocation_id = nat_gateway.get('NatGatewayAddresses', [{}])[0].get('AllocationId')
-        print(f"🔹 NAT Gateway ID: {nat_gateway_id}, State: {state}, Elastic IP: {allocation_id if allocation_id else 'None'}")
+        print(f" NAT Gateway ID: {nat_gateway_id}, State: {state}, Elastic IP: {allocation_id if allocation_id else 'None'}")
 
     # Step 2: Get input file and filter deletable NAT Gateways
-    filename = input("\n📂 Enter the filename containing NAT Gateway IDs to delete: ").strip()
+    filename = input("\n Enter the filename containing NAT Gateway IDs to delete: ").strip()
     deletable_gateways = get_nat_details_from_file(filename)
 
     if not deletable_gateways:
@@ -239,8 +239,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-Scenario 3: NAT Gateway is still associated with route tables
-✔️ Script will not delete it and just print a message.
 
