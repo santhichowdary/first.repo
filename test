@@ -1,0 +1,75 @@
+import boto3
+import botocore.exceptions
+
+def describe_nat_gateways():
+    ec2_client = boto3.client('ec2')
+    response = ec2_client.describe_nat_gateways()
+    return response['NatGateways']
+
+def check_route_tables(nat_gateway_id):
+    ec2_client = boto3.client('ec2')
+    response = ec2_client.describe_route_tables(
+        Filters=[{'Name': 'route.nat-gateway-id', 'Values': [nat_gateway_id]}]
+    )
+    return response['RouteTables']
+
+def delete_nat_gateway(nat_gateway_id):
+    ec2_client = boto3.client('ec2')
+    ec2_client.delete_nat_gateway(NatGatewayId=nat_gateway_id)
+    print(f"Deleted NAT Gateway with ID: {nat_gateway_id}")
+
+def release_elastic_ip(allocation_id):
+    ec2_client = boto3.client('ec2')
+    
+    try:
+        ec2_client.release_address(AllocationId=allocation_id)
+        print(f"Released Elastic IP with Allocation ID: {allocation_id}")
+    except botocore.exceptions.ClientError as e:
+        if 'InvalidAllocationID.NotFound' in str(e):
+            print(f"Elastic IP {allocation_id} does not exist or was already released. Skipping...")
+        else:
+            raise  # If it's another error, raise it
+
+def main():
+    nat_gateways = describe_nat_gateways()
+    
+    if not nat_gateways:
+        print("No NAT Gateways found.")
+        return
+
+    deletable_gateways = []
+
+    print("\nFound the following NAT Gateways:\n")
+    
+    for nat_gateway in nat_gateways:
+        nat_gateway_id = nat_gateway['NatGatewayId']
+        state = nat_gateway['State']
+        allocation_id = nat_gateway.get('NatGatewayAddresses', [{}])[0].get('AllocationId')
+
+        route_tables = check_route_tables(nat_gateway_id)
+
+        print(f"NAT Gateway ID: {nat_gateway_id}, State: {state}, Elastic IP: {allocation_id}, "
+              f"{'No associated Route Tables' if not route_tables else 'In use'}")
+
+        if state == 'deleted' or route_tables:
+            continue  # Skip if already deleted or still in use
+
+        deletable_gateways.append((nat_gateway_id, allocation_id))
+
+    if not deletable_gateways:
+        print("\nNo NAT Gateways are available for deletion.")
+        return
+
+    confirm = input("\nType 'delete' to confirm deletion of all listed NAT Gateways with no associated Route Tables or 'no' to cancel: ").strip().lower()
+
+    if confirm != 'delete':
+        print("Operation canceled.")
+        return
+
+    for nat_gateway_id, allocation_id in deletable_gateways:
+        delete_nat_gateway(nat_gateway_id)
+        if allocation_id:  # Only try to release if we have a valid Allocation ID
+            release_elastic_ip(allocation_id)
+
+if __name__ == "__main__":
+    main()
