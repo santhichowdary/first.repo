@@ -273,6 +273,7 @@ def delete_nat_gateway(nat_gateway_id):
     try:
         ec2_client.delete_nat_gateway(NatGatewayId=nat_gateway_id)
         print(f"Deleted NAT Gateway with ID: {nat_gateway_id}")
+        print("\n------------------------------------------------------------\n")
     except ClientError as e:
         print(f"Error deleting NAT Gateway {nat_gateway_id}: {e}")
 
@@ -320,7 +321,10 @@ def get_nat_details_from_file(filename):
 
     deletable_gateways = []
 
-    print("\nNAT Gateway Details from Input File:\n")
+    print("\n------------------------------------------------------------")
+    print("          NAT GATEWAY DETAILS FROM INPUT FILE               ")
+    print("------------------------------------------------------------\n")
+
 
     for nat_gateway in all_nat_gateways:
         nat_gateway_id = nat_gateway['NatGatewayId']
@@ -342,14 +346,18 @@ def main():
     
     # Check for proper usage
     if len(sys.argv) < 2:
-        print("Usage: python script.py <ALL|filename> [delete]")
-        print("  - <ALL> to list **all** NAT Gateways in your AWS account.")
-        print("  - <filename> to specify a text file with a list of NAT Gateway IDs to filter by.")
-        print("  - [delete] (optional) can be added after the file name to delete the NAT Gateways after processing.")
+        print("\n------------------------------------------------------------")
+        print("                SCRIPT USAGE INSTRUCTIONS                   ")
+        print("------------------------------------------------------------\n")
+        print("Usage: python script.py <ALL|filename> [delete]\n")
+        print("  - <ALL>       : lists all NAT Gateways in your account.")
+        print("  - <filename>  : specify a text file with a list of NAT IDs to filter by.")
+        print("  - [delete]    : (Optional) Deletes the NAT Gateways after processing.\n")
         print("\nExamples:")
-        print("  1. To list **all** NAT Gateways: python script.py ALL")
-        print("  2. To list NAT Gateways from a specific file: python script.py <filename>.txt")
-        print("  3. To delete NAT Gateways from a file (after confirming): python script.py <filename>.txt delete")
+        print("  1. List all NAT Gateways:      python script.py ALL")
+        print("  2. List NAT Gateways from file: python script.py <filename>.txt")
+        print("  3. Delete NAT Gateways from file: python script.py <filename>.txt delete")
+        print("\n------------------------------------------------------------\n")
         return
 
     # Get the first argument (ALL or filename)
@@ -358,7 +366,9 @@ def main():
 
     # If 'ALL' is provided, list all NAT Gateways
     if param == "ALL":
-        print("\nListing **all** NAT Gateways in your AWS account:\n")
+        print("\n------------------------------------------------------------")
+        print("               LISTING ALL NAT GATEWAYS                     ")
+        print("------------------------------------------------------------\n")
         all_nat_gateways = describe_nat_gateways()
         for nat_gateway in all_nat_gateways:
             nat_gateway_id = nat_gateway['NatGatewayId']
