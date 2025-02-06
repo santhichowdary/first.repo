@@ -1,0 +1,284 @@
+import boto3
+import sys
+from botocore.exceptions import ClientError
+
+AWS_REGION = 'us-east-1'  # Change this to your AWS region if needed
+
+def describe_load_balancers():
+    """Retrieve all Load Balancers (ALB, NLB, CLB)."""
+    elb_client = boto3.client('elbv2', region_name=AWS_REGION)  # For ALB & NLB
+    classic_elb_client = boto3.client('elb', region_name=AWS_REGION)  # For Classic ELB
+
+    try:
+        alb_nlb_response = elb_client.describe_load_balancers()
+        alb_nlb_load_balancers = alb_nlb_response['LoadBalancers']
+    except ClientError as e:
+        print(f"Error retrieving ALB/NLBs: {e}")
+        alb_nlb_load_balancers = []
+
+    try:
+        classic_response = classic_elb_client.describe_load_balancers()
+        classic_load_balancers = classic_response['LoadBalancerDescriptions']
+    except ClientError as e:
+        print(f"Error retrieving Classic ELBs: {e}")
+        classic_load_balancers = []
+
+    return alb_nlb_load_balancers, classic_load_balancers
+
+def check_for_active_services(load_balancer_arn):
+    """Check if the Load Balancer has active Target Groups or Listeners."""
+    elb_client = boto3.client('elbv2', region_name=AWS_REGION)
+
+    try:
+        tg_response = elb_client.describe_target_groups(LoadBalancerArn=load_balancer_arn)
+        if tg_response['TargetGroups']:
+            print(f" Warning: Load Balancer {load_balancer_arn} has active Target Groups.")
+            return False  
+    except ClientError as e:
+        print(f"Error checking target groups: {e}")
+        return False
+
+    try:
+        listener_response = elb_client.describe_listeners(LoadBalancerArn=load_balancer_arn)
+        if listener_response['Listeners']:
+            print(f" Warning: Load Balancer {load_balancer_arn} has active Listeners.")
+            return False  
+    except ClientError as e:
+        print(f"Error checking listeners: {e}")
+        return False
+
+    print(f" No active services found for {load_balancer_arn}, proceeding with deletion.")
+    return True  
+
+def delete_load_balancer(load_balancer_arn):
+    """Deletes an ALB/NLB if no active services are detected."""
+    elb_client = boto3.client('elbv2', region_name=AWS_REGION)
+
+    print(f" Checking if {load_balancer_arn} can be deleted...")
+
+    if check_for_active_services(load_balancer_arn):
+        try:
+            elb_client.delete_load_balancer(LoadBalancerArn=load_balancer_arn)
+            print(f" Successfully deleted Load Balancer: {load_balancer_arn}")
+        except ClientError as e:
+            print(f" Error deleting Load Balancer {load_balancer_arn}: {e}")
+    else:
+        print(f" Cannot delete Load Balancer {load_balancer_arn} due to active services.")
+
+def get_load_balancer_details_from_file(filename):
+    """Reads Load Balancer ARNs or names from a file and fetches details."""
+    try:
+        with open(filename, 'r') as file:
+            lb_ids = [line.strip() for line in file.readlines()]
+    except FileNotFoundError:
+        print(f" Error: File '{filename}' not found.")
+        return None
+
+    if not lb_ids:
+        print(" Error: The input file is empty.")
+        return None
+
+    alb_nlb_load_balancers, classic_load_balancers = describe_load_balancers()
+    matched_lb_file = []
+    unmatched_lbs = []
+
+    print("\n")
+
+    for lb_arn in lb_ids:
+        found = False
+        for lb in alb_nlb_load_balancers:
+            if lb_arn == lb['LoadBalancerArn']:
+                matched_lb_file.append(lb)
+                found = True
+                break
+
+        if not found:
+            for lb in classic_load_balancers:
+                if lb_arn == lb['LoadBalancerName']:
+                    matched_lb_file.append(lb)
+                    found = True
+
+        if not found:
+            unmatched_lbs.append(lb_arn)
+
+    if matched_lb_file:
+        print("\n------------------------------------------------------------")
+        print("           LOAD BALANCER STATUS            ")
+        print("------------------------------------------------------------\n")
+        for lb in matched_lb_file:
+            if 'LoadBalancerArn' in lb:
+                print(f"ALB/NLB - Name: {lb['LoadBalancerName']}, ARN: {lb['LoadBalancerArn']}, Type: {lb['Type']}, State: {lb['State']['Code']}")
+            else:
+                print(f"CLB - Name: {lb['LoadBalancerName']}, DNSName: {lb['DNSName']}")
+
+    if unmatched_lbs:
+        print("\n------------------------------------------------------------")
+        print("           INVALID LOAD BALANCER ARNS FROM FILE             ")
+        print("------------------------------------------------------------\n")
+        for arn in unmatched_lbs:
+            print(f"Provide a correct ARN: {arn}")
+
+    return matched_lb_file
+
+def print_usage_instructions():
+    """Prints out the usage instructions for the script."""
+    print("\n------------------------------------------------------------")
+    print("                    SCRIPT USAGE INSTRUCTIONS              ")
+    print("------------------------------------------------------------\n")
+    print("Usage: python script.py <ALL|filename> [delete] \n")
+    
+    print("Examples:")
+    print("  1. List all Load Balancers:         python script.py ALL")
+    print("  2. List Load Balancers from file:   python script.py <filename>.txt")
+    print("  3. Delete Load Balancers from file: python script.py <filename>.txt delete")
+    print("\n------------------------------------------------------------\n")
+
+def main():
+    """Main function to execute the script."""
+    if len(sys.argv) < 2:
+        print_usage_instructions()
+        return
+
+    param = sys.argv[1].upper()
+    action = sys.argv[2].lower() if len(sys.argv) > 2 else None
+
+    if param == "ALL":
+        print("\n------------------------------------------------------------")
+        print("               LISTING ALL LOAD BALANCERS                   ")
+        print("------------------------------------------------------------\n")
+        alb_nlb_load_balancers, classic_load_balancers = describe_load_balancers()
+        for lb in alb_nlb_load_balancers:
+            print(f"{lb['Type'].upper()} - Name: {lb['LoadBalancerName']}, ARN: {lb['LoadBalancerArn']}, State: {lb['State']['Code']}")
+        for lb in classic_load_balancers:
+            print(f"Classic ELB - Name: {lb['LoadBalancerName']}, DNSName: {lb['DNSName']}")
+
+        if action == "delete":
+            print("\n Deleting all Load Balancers is not allowed! Specify a file instead.")
+    
+    else:
+        deletable_load_balancers = get_load_balancer_details_from_file(param)
+
+        if not deletable_load_balancers:
+            return
+
+        if action == "delete":
+            print("\n Proceeding with deletion as 'delete' was specified.")
+            for lb in deletable_load_balancers:
+                delete_load_balancer(lb['LoadBalancerArn'])
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+
+
+readme
+
+
+# AWS Load Balancer Management Script
+
+## Overview
+This script helps manage AWS Load Balancers (ALB, NLB, and CLB). It can:
+- List all Load Balancers in an AWS account.
+- Display details of specific Load Balancers from a file.
+- Delete Load Balancers that are **not in active use**.
+
+## Prerequisites
+1. **Python 3.x** installed.
+2. **AWS CLI** configured with the required permissions.
+3. **boto3** installed:
+   ```sh
+   pip install boto3
+   ```
+4. AWS credentials set up (`~/.aws/credentials` or environment variables).
+
+## Usage
+
+### **1. List all Load Balancers**
+
+python script.py ALL
+```
+This command will list all Load Balancers in the AWS account.
+
+### **2. Check Load Balancers from a File**
+
+python script.py <filename>.txt
+```
+- The file must contain **one Load Balancer ARN or Name per line**.
+- The script will display the details **only if found in AWS**.
+- If not found, it will print: `Provide a correct ARN`.
+
+### **3. Delete Load Balancers from a File**
+
+python script.py <filename>.txt delete
+
+- **Deletion is only allowed if the Load Balancer has no active Listeners or Target Groups.**
+- If the Load Balancer is active, deletion is prevented, and a warning is displayed.
+- If deletion is successful, it confirms with a success message.
+
+### **4. Delete Load Balancers from AWS (without a file)** ❌
+
+python script.py ALL delete
+- **Not Allowed!** The script prevents accidental deletion of all Load Balancers.
+
+## Example Scenarios
+
+### **Example 1: Checking Load Balancers from a File**
+#### **`lb_list.txt` contents:**
+```
+arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/xyz123
+arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/nonexistent/abc456
+```
+#### **Command:**
+```sh
+python script.py lb_list.txt
+```
+#### **Output:**
+```
+------------------------------------------------------------
+           LOAD BALANCER STATUS            
+------------------------------------------------------------
+ALB/NLB - Name: my-alb, ARN: arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/xyz123, Type: application, State: active
+
+------------------------------------------------------------
+           INVALID LOAD BALANCER ARNS FROM FILE             
+------------------------------------------------------------
+Provide a correct ARN: arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/nonexistent/abc456
+```
+
+### **Example 2: Deleting Load Balancers from a File**
+```sh
+python script.py lb_list.txt delete
+```
+#### **Output (if deletion is possible):**
+```
+🔍 Checking if arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/xyz123 can be deleted...
+✅ No active services found for arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/xyz123, proceeding with deletion.
+✅ Successfully deleted Load Balancer: arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/xyz123
+```
+#### **Output (if deletion is blocked due to active services):**
+```
+🔍 Checking if arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/xyz123 can be deleted...
+⚠ Warning: Load Balancer arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/xyz123 has active Listeners.
+⚠ Cannot delete Load Balancer arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/xyz123 due to active services.
+```
+
+## Notes
+- **The script prevents accidental deletion of all Load Balancers.**
+- **Only Load Balancers without active Listeners or Target Groups can be deleted.**
+- **Ensure you have the necessary permissions in AWS IAM before running delete commands.**
+
+## Troubleshooting
+- **File Not Found:** Ensure the input file exists and has valid ARNs.
+- **No AWS Credentials:** Configure AWS credentials using `aws configure`.
+- **Insufficient Permissions:** Ensure your IAM role has the necessary permissions to describe and delete Load Balancers.
+
+## Author
+- **Your Name / Team**
+- **Date: YYYY-MM-DD**
+- **Version: 1.0**
+
