@@ -1,0 +1,202 @@
+"""
+script_owner/author: Santhi Sri
+E-mail: santhisri.kankanala@fiserv.com
+
+Python script to identify and delete unused NAT Gateways in an AWS environment.
+
+Features:
+
+Identify NAT Gateways: Lists all NAT Gateways/given NAT Gateways and its used status in your AWS account
+
+Check Route Tables: Checks if any route tables are associated with each NAT Gateway.
+
+Delete Unused NAT Gateways: Deletes NAT Gateways with no associated route tables.
+
+Release Elastic IPs: Releases Elastic IPs associated with deleted NAT Gateways.
+
+Usage:
+
+List All NAT Gateways   : python script.py ALL
+
+List NAT Gateways from a File:  python script.py <filename>.txt
+
+Delete NAT Gateways from a File: python script.py <filename>.txt DELETE
+"""
+
+import boto3
+import sys
+import time
+import os
+from botocore.exceptions import ClientError
+
+# Specify your AWS region
+AWS_REGION = os.getenv('AWS_REGION', None)  # Get AWS Region from env variables or cred
+
+if not AWS_REGION:
+    # if not set in env, try fetching from default profile's config
+    session = boto3.Session()
+    AWS_REGION = session.region_name
+
+def describe_nat_gateways():
+    """Fetches all NAT Gateways from AWS."""
+    ec2_client = boto3.client('ec2', region_name=AWS_REGION)
+    response = ec2_client.describe_nat_gateways()
+    return response['NatGateways']
+
+def check_route_tables(nat_gateway_id):
+    """Checks if a NAT Gateway is associated with any route tables."""
+    ec2_client = boto3.client('ec2', region_name=AWS_REGION)
+    response = ec2_client.describe_route_tables(
+        Filters=[{'Name': 'route.nat-gateway-id', 'Values': [nat_gateway_id]}]
+    )
+    return response['RouteTables']
+
+def delete_nat_gateway(nat_gateway_id):
+    """Deletes the specified NAT Gateway."""
+    ec2_client = boto3.client('ec2', region_name=AWS_REGION)
+    try:
+        ec2_client.delete_nat_gateway(NatGatewayId=nat_gateway_id)
+        print(f"Deleted NAT Gateway with ID: {nat_gateway_id}")
+    except ClientError as e:
+        print(f"Error deleting NAT Gateway {nat_gateway_id}: {e}")
+
+def wait_for_nat_deletion(nat_gateway_id):
+    """Waits for NAT Gateway to be fully deleted before releasing the Elastic IP."""
+    ec2_client = boto3.client('ec2', region_name=AWS_REGION)
+    print(f"Waiting for NAT Gateway {nat_gateway_id} to be deleted...")
+
+    while True:
+        try:
+            response = ec2_client.describe_nat_gateways(
+                Filters=[{'Name': 'nat-gateway-id', 'Values': [nat_gateway_id]}]
+            )
+            if not response['NatGateways'] or response['NatGateways'][0]['State'] == 'deleted':
+                print(f"NAT Gateway {nat_gateway_id} is fully deleted.")
+                break
+        except ClientError as e:
+            print(f"Error checking NAT Gateway status: {e}")
+            break
+        time.sleep(10)  # Check every 10 seconds
+
+def release_elastic_ip(allocation_id):
+    """Releases the specified Elastic IP."""
+    ec2_client = boto3.client('ec2', region_name=AWS_REGION)
+    try:
+        ec2_client.release_address(AllocationId=allocation_id)
+        print(f"Released Elastic IP with Allocation ID: {allocation_id}")
+    except ClientError as e:
+        print(f"Error releasing Elastic IP {allocation_id}: {e}")
+
+def get_nat_details_from_file(filename):
+    """Reads NAT Gateway IDs from a file and fetches details if they exist."""
+    try:
+        with open(filename, 'r') as file:
+            nat_ids = [line.strip() for line in file.readlines()]
+    except FileNotFoundError:
+        print(f"Error: The file '{filename}' was not found.")
+        return None
+
+    if not nat_ids:
+        print("Error: The input file is empty.")
+        return None
+
+    all_nat_gateways = describe_nat_gateways()
+    found_nat_gateways = []
+    unmatched_nats = []
+
+    print("\n")
+
+    for nat_id in nat_ids:
+        found = False
+        for nat_gateway in all_nat_gateways:
+            if nat_id == nat_gateway['NatGatewayId']:
+                state = nat_gateway['State']
+                allocation_id = nat_gateway.get('NatGatewayAddresses', [{}])[0].get('AllocationId')
+                route_tables = check_route_tables(nat_id)
+                print(f"NAT Gateway ID: {nat_id}, State: {state}, Elastic IP: {allocation_id}, "
+                      f"{'No associated Route Tables' if not route_tables else 'In use'}")
+                
+                if not route_tables and state != 'deleted':
+                    found_nat_gateways.append((nat_id, allocation_id))
+                
+                found = True
+                break
+
+        if not found:
+            unmatched_nats.append(nat_id)
+
+    if unmatched_nats:
+        print("\n------------------------------------------------------------")
+        print("           INVALID NAT GATEWAY IDS FROM FILE                ")
+        print("------------------------------------------------------------\n")
+        for nat_id in unmatched_nats:
+            print(f"Provide a correct NAT Gateway ID: {nat_id}")
+
+    return found_nat_gateways
+
+def main():
+    """Main function to execute the script."""
+    
+    if len(sys.argv) < 2:
+        print("\n------------------------------------------------------------")
+        print("                SCRIPT USAGE INSTRUCTIONS                   ")
+        print("------------------------------------------------------------\n")
+        print("Usage: python script.py <ALL|filename> [DELETE]\n")
+        
+        print("Examples:")
+        print("  1. List all NAT Gateways:         python script.py ALL")
+        print("  2. List NAT Gateways from file:   python script.py <filename>.txt")
+        print("  3. Delete NAT Gateways from file: python script.py <filename>.txt DELETE")
+        print("\n------------------------------------------------------------\n")
+        return
+
+    param = sys.argv[1]  # ALL or filename
+    action = sys.argv[2] if len(sys.argv) > 2 else None  # Optional delete argument
+
+    if param.upper() == "ALL":
+        print("\n------------------------------------------------------------")
+        print("               LISTING ALL NAT GATEWAYS                     ")
+        print("------------------------------------------------------------\n")
+        all_nat_gateways = describe_nat_gateways()
+        deletable_gateways = []
+        for nat_gateway in all_nat_gateways:
+            nat_gateway_id = nat_gateway['NatGatewayId']
+            state = nat_gateway['State']
+            allocation_id = nat_gateway.get('NatGatewayAddresses', [{}])[0].get('AllocationId')
+            route_tables = check_route_tables(nat_gateway_id)
+            print(f"NAT Gateway ID: {nat_gateway_id}, State: {state}, Elastic IP: {allocation_id if allocation_id else 'None'}, "
+                  f"{'No associated Route Tables' if not route_tables else 'In use'}")
+            if not route_tables and state != 'deleted':
+                deletable_gateways.append((nat_gateway_id, allocation_id))
+        
+        if action and action.upper() == "DELETE":
+            if not deletable_gateways:
+                print("\nNo NAT Gateways available for deletion.")
+                return
+
+            for nat_gateway_id, allocation_id in deletable_gateways:
+                delete_nat_gateway(nat_gateway_id)
+                wait_for_nat_deletion(nat_gateway_id)
+                if allocation_id:
+                    release_elastic_ip(allocation_id)
+        else:
+            print("\nTo delete unused given NAT Gateways, please pass DELETE as your 2nd argument.")
+
+    else:
+        deletable_gateways = get_nat_details_from_file(param)
+
+        if not deletable_gateways:
+            print("\nNo NAT Gateways available for deletion.")
+            return
+
+        if action and action.upper() == 'DELETE':
+            for nat_gateway_id, allocation_id in deletable_gateways:
+                delete_nat_gateway(nat_gateway_id)
+                wait_for_nat_deletion(nat_gateway_id)
+                if allocation_id:
+                    release_elastic_ip(allocation_id)
+        else:
+            print("\nTo delete unused given NAT Gateways, please pass DELETE as your 2nd argument.")
+
+if __name__ == "__main__":
+    main()
