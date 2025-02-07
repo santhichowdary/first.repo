@@ -1,0 +1,182 @@
+import boto3
+import sys
+import os
+from botocore.exceptions import ClientError
+
+# Get AWS Region from environment variables or boto3 default session
+AWS_REGION = os.getenv('AWS_REGION', None)  # Remove the backslash
+
+if not AWS_REGION:
+    # If not set in env, try fetching from default profile's config
+    session = boto3.Session()
+    AWS_REGION = session.region_name
+
+def describe_load_balancers():
+    """Retrieve all Load Balancers (ALB, NLB, CLB)."""
+    elb_client = boto3.client('elbv2', region_name=AWS_REGION)  # For ALB & NLB
+    classic_elb_client = boto3.client('elb', region_name=AWS_REGION)  # For Classic ELB
+
+    try:
+        alb_nlb_response = elb_client.describe_load_balancers()
+        alb_nlb_load_balancers = alb_nlb_response['LoadBalancers']
+    except ClientError as e:
+        print(f"Error retrieving ALB/NLBs: {e}")
+        alb_nlb_load_balancers = []
+
+    try:
+        classic_response = classic_elb_client.describe_load_balancers()
+        classic_load_balancers = classic_response['LoadBalancerDescriptions']
+    except ClientError as e:
+        print(f"Error retrieving Classic ELBs: {e}")
+        classic_load_balancers = []
+
+    return alb_nlb_load_balancers, classic_load_balancers
+
+def check_for_active_services(load_balancer_arn):
+    """Check if the Load Balancer has active Target Groups or Listeners."""
+    elb_client = boto3.client('elbv2', region_name=AWS_REGION)
+
+    try:
+        tg_response = elb_client.describe_target_groups(LoadBalancerArn=load_balancer_arn)
+        if tg_response['TargetGroups']:
+            print(f"Warning: Load Balancer {load_balancer_arn} has active Target Groups.")
+            return False  
+    except ClientError as e:
+        print(f"Error checking target groups: {e}")
+        return False
+
+    try:
+        listener_response = elb_client.describe_listeners(LoadBalancerArn=load_balancer_arn)
+        if listener_response['Listeners']:
+            print(f"Warning: Load Balancer {load_balancer_arn} has active Listeners.")
+            return False  
+    except ClientError as e:
+        print(f"Error checking listeners: {e}")
+        return False
+
+    print(f"No active services found for {load_balancer_arn}, proceeding with deletion.")
+    return True  
+
+def delete_load_balancer(load_balancer_arn):
+    """Deletes an ALB/NLB if no active services are detected."""
+    elb_client = boto3.client('elbv2', region_name=AWS_REGION)
+
+    print(f"Checking if {load_balancer_arn} can be deleted...")
+
+    if check_for_active_services(load_balancer_arn):
+        try:
+            elb_client.delete_load_balancer(LoadBalancerArn=load_balancer_arn)
+            print(f"Successfully deleted Load Balancer: {load_balancer_arn}")
+        except ClientError as e:
+            print(f"Error deleting Load Balancer {load_balancer_arn}: {e}")
+    else:
+        print(f"Cannot delete Load Balancer {load_balancer_arn} due to active services.")
+
+def get_load_balancer_details_from_file(filename):
+    """Reads Load Balancer ARNs or names from a file and fetches details."""
+    try:
+        with open(filename, 'r') as file:
+            lb_ids = [line.strip() for line in file.readlines()]
+    except FileNotFoundError:
+        print(f"Error: File '{filename}' not found.")
+        return None
+
+    if not lb_ids:
+        print("Error: The input file is empty.")
+        return None
+
+    alb_nlb_load_balancers, classic_load_balancers = describe_load_balancers()
+    matched_lb_file = []
+    unmatched_lbs = []
+
+    for lb_arn in lb_ids:
+        found = False
+        for lb in alb_nlb_load_balancers:
+            if lb_arn == lb['LoadBalancerArn']:
+                matched_lb_file.append(lb)
+                found = True
+                break
+
+        if not found:
+            for lb in classic_load_balancers:
+                if lb_arn == lb['LoadBalancerName']:
+                    matched_lb_file.append(lb)
+                    found = True
+
+        if not found:
+            unmatched_lbs.append(lb_arn)
+
+    if matched_lb_file:
+        print("\n------------------------------------------------------------")
+        print("           LOAD BALANCER STATUS            ")
+        print("------------------------------------------------------------\n")
+        for lb in matched_lb_file:
+            if 'LoadBalancerArn' in lb:
+                print(f"ALB/NLB - Name: {lb['LoadBalancerName']}, ARN: {lb['LoadBalancerArn']}, Type: {lb['Type']}, State: {lb['State']['Code']}")
+            else:
+                print(f"CLB - Name: {lb['LoadBalancerName']}, DNSName: {lb['DNSName']}")
+
+    if unmatched_lbs:
+        print("\n------------------------------------------------------------")
+        print("           INVALID LOAD BALANCER ARNS FROM FILE             ")
+        print("------------------------------------------------------------\n")
+        for arn in unmatched_lbs:
+            print(f"Provide a correct ARN: {arn}")
+
+    return matched_lb_file
+
+def print_usage_instructions():
+    """Prints out the usage instructions for the delete_elb."""
+    print("\n------------------------------------------------------------")
+    print("                    delete_elb USAGE INSTRUCTIONS              ")
+    print("------------------------------------------------------------\n")
+    print("Usage: python delete_elb.py <ALL|filename> [DELETE] \n")
+    
+    print("Examples:")
+    print("  1. List all Load Balancers:         python delete_elb.py ALL")
+    print("  2. List Load Balancers from file:   python delete_elb.py <filename>.txt")
+    print("  3. Delete Load Balancers from file: python delete_elb.py <filename>.txt DELETE")
+    print("  4. Delete All Load Balancers:       python delete_elb.py ALL DELETE")
+    print("\n------------------------------------------------------------\n")
+
+def main():
+    """Main function to execute the delete_elb."""
+    if len(sys.argv) < 2:
+        print_usage_instructions()
+        return
+
+    param = sys.argv[1].upper()  # Ensure param is uppercase
+    action = sys.argv[2].upper() if len(sys.argv) > 2 else None  # Convert action to uppercase 
+
+    if param == "ALL":
+        print("\n------------------------------------------------------------")
+        print("               LISTING ALL LOAD BALANCERS                   ")
+        print("------------------------------------------------------------\n")
+        alb_nlb_load_balancers, classic_load_balancers = describe_load_balancers()
+        for lb in alb_nlb_load_balancers:
+            print(f"{lb['Type'].upper()} - Name: {lb['LoadBalancerName']}, ARN: {lb['LoadBalancerArn']}, State: {lb['State']['Code']}")
+        for lb in classic_load_balancers:
+            print(f"Classic ELB - Name: {lb['LoadBalancerName']}, DNSName: {lb['DNSName']}")
+
+        if action == "DELETE":
+            print("\nProceeding with deletion as 'DELETE' was specified.")
+            for lb in alb_nlb_load_balancers:
+                delete_load_balancer(lb['LoadBalancerArn'])
+            for lb in classic_load_balancers:
+                delete_load_balancer(lb['LoadBalancerName'])
+    
+    else:
+        deletable_load_balancers = get_load_balancer_details_from_file(param)
+
+        if not deletable_load_balancers:
+            return
+
+        if action == "DELETE":
+            print("\nProceeding with deletion as 'DELETE' was specified.")
+            for lb in deletable_load_balancers:
+                delete_load_balancer(lb['LoadBalancerArn'])
+        else:
+            print("Invalid action. Only DELETE as an action is allowed.")        
+
+if __name__ == "__main__":
+    main()
