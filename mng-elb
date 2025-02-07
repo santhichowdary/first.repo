@@ -180,3 +180,371 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+dummy 
+
+
+import boto3
+import argparse
+import os
+from botocore.exceptions import ClientError
+
+# Set AWS region from environment variable or session
+AWS_REGION = os.getenv('AWS_REGION', None)
+if not AWS_REGION:
+    session = boto3.Session()
+    AWS_REGION = session.region_name
+
+# Fetch details of all ALB/NLB and Classic ELBs
+def describe_load_balancers():
+    elb_client = boto3.client('elbv2', region_name=AWS_REGION)
+    classic_elb_client = boto3.client('elb', region_name=AWS_REGION)
+    
+    try:
+        alb_nlb_response = elb_client.describe_load_balancers()
+        alb_nlb_load_balancers = alb_nlb_response['LoadBalancers']
+    except ClientError:
+        alb_nlb_load_balancers = []
+    
+    try:
+        classic_response = classic_elb_client.describe_load_balancers()
+        classic_load_balancers = classic_response['LoadBalancerDescriptions']
+    except ClientError:
+        classic_load_balancers = []
+    
+    return alb_nlb_load_balancers, classic_load_balancers
+
+# Check if the Load Balancer has active target groups or listeners
+def check_for_active_services(load_balancer_arn):
+    elb_client = boto3.client('elbv2', region_name=AWS_REGION)
+    active_services = False
+    target_group_details = []
+    listener_details = []
+
+    try:
+        # Fetch associated target groups
+        tg_response = elb_client.describe_target_groups(LoadBalancerArn=load_balancer_arn)
+        for tg in tg_response['TargetGroups']:
+            target_group_details.append(f"{tg['TargetGroupName']} (ARN: {tg['TargetGroupArn']})")
+        if target_group_details:
+            active_services = True
+    except ClientError:
+        pass
+    
+    try:
+        # Fetch associated listeners
+        listener_response = elb_client.describe_listeners(LoadBalancerArn=load_balancer_arn)
+        for listener in listener_response['Listeners']:
+            listener_details.append(f"Port {listener['Port']} - Protocol {listener['Protocol']}")
+        if listener_details:
+            active_services = True
+    except ClientError:
+        pass
+
+    return active_services, target_group_details, listener_details
+
+# Attempt to delete the specified Load Balancer
+def delete_load_balancer(load_balancer_arn_or_name, is_classic=False):
+    if is_classic:
+        elb_client = boto3.client('elb', region_name=AWS_REGION)
+        try:
+            elb_client.delete_load_balancer(LoadBalancerName=load_balancer_arn_or_name)
+            print(f"SUCCESS: Deleted Classic Load Balancer: {load_balancer_arn_or_name}")
+        except ClientError as e:
+            print(f"ERROR: Failed to delete Classic Load Balancer {load_balancer_arn_or_name}: {e}")
+    else:
+        elb_client = boto3.client('elbv2', region_name=AWS_REGION)
+        active, tg_details, listener_details = check_for_active_services(load_balancer_arn_or_name)
+        
+        if active:
+            print(f"\nERROR: Cannot delete Load Balancer {load_balancer_arn_or_name} due to active services.")
+            if tg_details:
+                print("  - Active Target Groups:")
+                for tg in tg_details:
+                    print(f"    * {tg}")
+            if listener_details:
+                print("  - Active Listeners:")
+                for listener in listener_details:
+                    print(f"    * {listener}")
+            print("  - Ensure all target groups and listeners are removed before retrying.\n")
+        else:
+            try:
+                elb_client.delete_load_balancer(LoadBalancerArn=load_balancer_arn_or_name)
+                print(f"SUCCESS: Deleted ALB/NLB: {load_balancer_arn_or_name}")
+            except ClientError as e:
+                print(f"ERROR: Failed to delete Load Balancer {load_balancer_arn_or_name}: {e}")
+
+# Read Load Balancer ARNs from input file and cross-check them
+def get_load_balancer_details_from_file(filename):
+    try:
+        with open(filename, 'r') as file:
+            lb_ids = [line.strip() for line in file.readlines()]
+    except FileNotFoundError:
+        print(f"Error: File '{filename}' not found.")
+        return None
+    
+    if not lb_ids:
+        print("Error: The input file is empty.")
+        return None
+    
+    alb_nlb_load_balancers, classic_load_balancers = describe_load_balancers()
+    matched_lbs = []
+    unmatched_lbs = []
+    
+    for lb_arn in lb_ids:
+        found = False
+        for lb in alb_nlb_load_balancers:
+            if lb_arn == lb['LoadBalancerArn']:
+                active, tg_details, listener_details = check_for_active_services(lb_arn)
+                lb['ActiveTargetGroups'] = tg_details
+                lb['Listeners'] = listener_details
+                matched_lbs.append(lb)
+                found = True
+                break
+        if not found:
+            for lb in classic_load_balancers:
+                if lb_arn == lb['LoadBalancerName']:
+                    matched_lbs.append(lb)
+                    found = True
+        if not found:
+            unmatched_lbs.append(lb_arn)
+    
+    if unmatched_lbs:
+        print("Invalid Load Balancer ARNs:")
+        for arn in unmatched_lbs:
+            print(f"  - {arn}")
+    
+    return matched_lbs
+
+# Main function to handle input parameters and trigger actions
+def main():
+    parser = argparse.ArgumentParser(description="Manage AWS Load Balancers")
+    parser.add_argument('-i', '--input', required=True, help="Specify 'all' or a filename containing Load Balancer ARNs")
+    parser.add_argument('-a', '--action', choices=['DELETE'], help="Specify DELETE to remove Load Balancers")
+    args = parser.parse_args()
+    
+    param = args.input.lower()
+    action = args.action
+    
+    if param == "all":
+        # Fetch all Load Balancers from AWS
+        alb_nlb_load_balancers, classic_load_balancers = describe_load_balancers()
+        deletable_lbs = []
+        
+        for lb in alb_nlb_load_balancers:
+            lb_arn = lb['LoadBalancerArn']
+            state = lb['State']['Code']
+            active, tg_details, listener_details = check_for_active_services(lb_arn)
+            print(f"Load Balancer: {lb_arn}, Type: ALB/NLB, State: {state}")
+            if active:
+                print("  - Active Target Groups:", tg_details if tg_details else "None")
+                print("  - Active Listeners:", listener_details if listener_details else "None")
+            if not active and state != 'deleted':
+                deletable_lbs.append(lb_arn)
+        
+        for lb in classic_load_balancers:
+            print(f"Load Balancer: {lb['LoadBalancerName']}, Type: Classic, State: Available")
+            deletable_lbs.append(lb['LoadBalancerName'])
+        
+    elif os.path.isfile(param):
+        # Fetch and cross-check Load Balancers from the input file
+        matched_lbs = get_load_balancer_details_from_file(param)
+        deletable_lbs = []
+        
+        for lb in matched_lbs:
+            lb_arn = lb.get('LoadBalancerArn', lb.get('LoadBalancerName'))
+            state = lb['State']['Code'] if 'State' in lb else "Available"
+            tg_details = lb.get('ActiveTargetGroups', [])
+            listener_details = lb.get('Listeners', [])
+            print(f"Load Balancer: {lb_arn}, Type: {'ALB/NLB' if 'LoadBalancerArn' in lb else 'Classic'}, State: {state}")
+            if tg_details or listener_details:
+                print("  - Active Target Groups:", tg_details if tg_details else "None")
+                print("  - Active Listeners:", listener_details if listener_details else "None")
+            if action == "DELETE" and not tg_details and not listener_details:
+                deletable_lbs.append(lb_arn)
+
+    if action == "DELETE":
+        for lb_arn in deletable_lbs:
+            delete_load_balancer(lb_arn, is_classic="LoadBalancerName" in lb_arn)
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+
+real
+
+import boto3
+import argparse
+import os
+from botocore.exceptions import ClientError
+
+# Set AWS region from environment variable or session
+AWS_REGION = os.getenv('AWS_REGION', None)
+if not AWS_REGION:
+    session = boto3.Session()
+    AWS_REGION = session.region_name
+
+# Function to describe all ALB/NLB and Classic ELBs in the region
+def describe_load_balancers():
+    elb_client = boto3.client('elbv2', region_name=AWS_REGION)
+    classic_elb_client = boto3.client('elb', region_name=AWS_REGION)
+    
+    try:
+        alb_nlb_response = elb_client.describe_load_balancers()
+        alb_nlb_load_balancers = alb_nlb_response.get('LoadBalancers', [])
+    except ClientError:
+        alb_nlb_load_balancers = []
+    
+    try:
+        classic_response = classic_elb_client.describe_load_balancers()
+        classic_load_balancers = classic_response.get('LoadBalancerDescriptions', [])
+    except ClientError:
+        classic_load_balancers = []
+    
+    return alb_nlb_load_balancers, classic_load_balancers
+
+# Function to check if a Load Balancer has active target groups or listeners
+def check_for_active_services(load_balancer_arn):
+    elb_client = boto3.client('elbv2', region_name=AWS_REGION)
+    active_services = False
+    target_group_details = []
+    listener_details = []
+
+    try:
+        # Fetch associated target groups
+        tg_response = elb_client.describe_target_groups(LoadBalancerArn=load_balancer_arn)
+        for tg in tg_response['TargetGroups']:
+            target_group_details.append(f"{tg['TargetGroupName']} (ARN: {tg['TargetGroupArn']})")
+        if target_group_details:
+            active_services = True
+    except ClientError:
+        pass
+    
+    try:
+        # Fetch associated listeners
+        listener_response = elb_client.describe_listeners(LoadBalancerArn=load_balancer_arn)
+        for listener in listener_response['Listeners']:
+            listener_details.append(f"Port {listener['Port']} - Protocol {listener['Protocol']}")
+        if listener_details:
+            active_services = True
+    except ClientError:
+        pass
+
+    return active_services, target_group_details, listener_details
+
+# Function to delete a Load Balancer
+def delete_load_balancer(load_balancer_arn_or_name, is_classic=False):
+    if is_classic:
+        elb_client = boto3.client('elb', region_name=AWS_REGION)
+        try:
+            elb_client.delete_load_balancer(LoadBalancerName=load_balancer_arn_or_name)
+            print(f"SUCCESS: Deleted Classic Load Balancer: {load_balancer_arn_or_name}")
+        except ClientError as e:
+            print(f"ERROR: Failed to delete Classic Load Balancer {load_balancer_arn_or_name}: {e}")
+    else:
+        elb_client = boto3.client('elbv2', region_name=AWS_REGION)
+        active, tg_details, listener_details = check_for_active_services(load_balancer_arn_or_name)
+        
+        if active:
+            print(f"\nERROR: Cannot delete Load Balancer {load_balancer_arn_or_name} due to active services.")
+            if tg_details:
+                print("  - Active Target Groups:")
+                for tg in tg_details:
+                    print(f"    * {tg}")
+            if listener_details:
+                print("  - Active Listeners:")
+                for listener in listener_details:
+                    print(f"    * {listener}")
+            print("  - Ensure all target groups and listeners are removed before retrying.\n")
+        else:
+            try:
+                elb_client.delete_load_balancer(LoadBalancerArn=load_balancer_arn_or_name)
+                print(f"SUCCESS: Deleted ALB/NLB: {load_balancer_arn_or_name}")
+            except ClientError as e:
+                print(f"ERROR: Failed to delete Load Balancer {load_balancer_arn_or_name}: {e}")
+
+# Main function to handle input parameters and process Load Balancers
+def main():
+    parser = argparse.ArgumentParser(description="Manage AWS Load Balancers")
+    parser.add_argument('-i', '--input', required=True, help="Specify 'all' or a filename containing Load Balancer ARNs")
+    parser.add_argument('-a', '--action', choices=['DELETE'], help="Specify DELETE to remove Load Balancers")
+    args = parser.parse_args()
+    
+    param = args.input.lower()
+    action = args.action
+    deletable_lbs = []
+    
+    if param == "all":
+        # Fetch all Load Balancers in the region
+        print("\n------------------------------------------------------------")
+        print("               LISTING ALL LOAD BALANCERS                     ")
+        print("------------------------------------------------------------\n")
+        alb_nlb_load_balancers, classic_load_balancers = describe_load_balancers()
+        
+        if not alb_nlb_load_balancers and not classic_load_balancers:
+            print("No Load Balancers found in the region.")
+            return
+        
+        for lb in alb_nlb_load_balancers:
+            lb_arn = lb['LoadBalancerArn']
+            state = lb['State']['Code']
+            active, tg_details, listener_details = check_for_active_services(lb_arn)
+            print(f"Load Balancer: {lb_arn}, Type: ALB/NLB, State: {state}")
+            if active:
+                print("  - Cannot delete due to active services:")
+                if tg_details:
+                    print("    - Active Target Groups:", tg_details)
+                if listener_details:
+                    print("    - Active Listeners:", listener_details)
+            else:
+                deletable_lbs.append(lb_arn)
+        
+        for lb in classic_load_balancers:
+            print(f"Load Balancer: {lb['LoadBalancerName']}, Type: Classic, State: Available")
+            deletable_lbs.append(lb['LoadBalancerName'])
+        
+    elif os.path.isfile(param):
+        # Fetch Load Balancers from input file
+        with open(param, 'r') as file:
+            lb_ids = [line.strip() for line in file.readlines()]
+        
+        alb_nlb_load_balancers, classic_load_balancers = describe_load_balancers()
+        
+        for lb_arn in lb_ids:
+            found = False
+            for lb in alb_nlb_load_balancers:
+                if lb_arn == lb['LoadBalancerArn']:
+                    active, tg_details, listener_details = check_for_active_services(lb_arn)
+                    print(f"Load Balancer: {lb_arn}, Type: ALB/NLB")
+                    if active:
+                        print("  - Cannot delete due to active services:")
+                        if tg_details:
+                            print("    - Active Target Groups:", tg_details)
+                        if listener_details:
+                            print("    - Active Listeners:", listener_details)
+                    else:
+                        deletable_lbs.append(lb_arn)
+                    found = True
+            if not found:
+                print(f"Invalid Load Balancer: {lb_arn}")
+    
+    if action == "DELETE":
+        # Proceed with deletion of eligible Load Balancers
+        for lb_arn in deletable_lbs:
+            delete_load_balancer(lb_arn, is_classic=not lb_arn.startswith("arn:"))
+
+if __name__ == "__main__":
+    main()
+
+
