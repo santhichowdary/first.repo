@@ -1,0 +1,114 @@
+import boto3
+import sys
+import os
+import datetime
+import logging
+
+# Initialize EC2 client
+ec2 = boto3.client('ec2')
+
+# Directory for logs
+LOG_DIR = "logs"
+action = "DELETE_VPC_ENDPOINTS"
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR)
+
+def setup_logger(action):
+    """Setup logger with a unique log file for each action"""
+    log_filename = os.path.join(LOG_DIR, f"{action}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+    logging.basicConfig(
+        filename=log_filename,
+        filemode='w',
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+    return logging.getLogger()
+
+def read_endpoint_file(file_path):
+    """Read input file and return a list of VPC endpoint IDs"""
+    endpoints = []
+    try:
+        with open(file_path, "r") as file:
+            for line in file:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    endpoints.append(line)
+        return endpoints
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        sys.exit(1)
+
+def get_endpoint_details(endpoint_id):
+    """Fetch and return details of a VPC endpoint"""
+    try:
+        response = ec2.describe_vpc_endpoints(VpcEndpointIds=[endpoint_id])
+        endpoint = response['VpcEndpoints'][0]
+        return endpoint
+    except Exception as e:
+        print(f"Error fetching details for VPC endpoint {endpoint_id}: {e}")
+        return None
+
+def is_endpoint_unused(endpoint_id):
+    """Check if a VPC endpoint is unused (no route tables or subnets)"""
+    endpoint = get_endpoint_details(endpoint_id)
+    if endpoint and not endpoint['SubnetIds'] and not endpoint['RouteTableIds']:
+        return True
+    return False
+
+def delete_vpc_endpoints(endpoints):
+    """Delete VPC endpoints if they are unused"""
+    logger = setup_logger("DELETE_VPC_ENDPOINTS")
+    print("\nDeleting Unused VPC Endpoints:")
+
+    for endpoint_id in endpoints:
+        if is_endpoint_unused(endpoint_id):
+            try:
+                print(f"Deleting unused VPC endpoint {endpoint_id}...")
+                ec2.delete_vpc_endpoints(VpcEndpointIds=[endpoint_id])
+                logger.info(f"Successfully deleted VPC endpoint {endpoint_id}")
+                print(f"✅ VPC endpoint {endpoint_id} successfully deleted")
+            except Exception as e:
+                print(f"❌ Error deleting VPC endpoint {endpoint_id}: {e}")
+                logger.error(f"Error deleting VPC endpoint {endpoint_id}: {e}")
+        else:
+            print(f"Skipping VPC endpoint {endpoint_id} as it is in use.")
+            logger.info(f"Skipped VPC endpoint {endpoint_id} as it is in use.")
+
+def display_vpc_endpoints(endpoints):
+    """Display the list of VPC endpoints and their details"""
+    print("\nList of VPC Endpoints from the Input File with Details:")
+    for endpoint_id in endpoints:
+        endpoint = get_endpoint_details(endpoint_id)
+        if endpoint:
+            print(f"\nVPC Endpoint ID: {endpoint_id}")
+            print(f"  Service Name: {endpoint['ServiceName']}")
+            print(f"  VPC ID: {endpoint['VpcId']}")
+            print(f"  State: {endpoint['State']}")
+            print(f"  Route Table IDs: {', '.join(endpoint['RouteTableIds']) if endpoint['RouteTableIds'] else 'None'}")
+            print(f"  Subnet IDs: {', '.join(endpoint['SubnetIds']) if endpoint['SubnetIds'] else 'None'}")
+        else:
+            print(f"\nVPC Endpoint ID: {endpoint_id} - Error fetching details")
+
+if __name__ == "__main__":
+    # If no arguments provided, ask for input file
+    if len(sys.argv) < 2:
+       print("Run the script by providing input_file as a parameter which is Mandatory -> Usage: python delete_vpc_endpoints.py <input_file> [DELETE]")
+       sys.exit(1)
+
+    file_path = sys.argv[1]
+
+    # If input file is missing, prompt user
+    if not os.path.exists(file_path):
+        print(f"Error: File '{file_path}' not found.")
+        sys.exit(1)
+
+    action = sys.argv[2] if len(sys.argv) > 2 else ""
+
+    endpoints = read_endpoint_file(file_path)
+
+    # Display the VPC endpoints and their details
+    display_vpc_endpoints(endpoints)
+
+    # Delete the VPC endpoints if the action is 'DELETE'
+    if action == "DELETE":
+        delete_vpc_endpoints(endpoints)
