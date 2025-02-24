@@ -1,0 +1,31 @@
+import os
+import logging
+
+def setup_logging(script_path, log_to_console=True, log_level=logging.INFO):
+    """
+    Set up logging with a log file named after the script.
+    
+    :param script_path: The full path of the script (__file__)
+    :param log_to_console: Whether to log to the console (default: True)
+    :param log_level: Logging level (default: INFO)
+    :return: Logger object
+    """
+    script_name = os.path.basename(script_path)  # Extract filename from path
+    log_file = f"{os.path.splitext(script_name)[0]}.log"  # Remove '.py' and add '.log'
+
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.FileHandler(log_file)]
+    )
+
+    logger = logging.getLogger()
+
+    if log_to_console:
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(log_level)
+        formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+
+    return logger
