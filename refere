@@ -1,0 +1,267 @@
+"""script_owner/author:Sriram S
+E-mail:sriram.sundaravaradhan@fiserv.com
+Desc: 1) ebs volume type conversion, input file needs to be made in following format
+
+vol_id,desired_volume_type
+vol_id_2,desired_volume_type_2
+Ex: vol-053b045bbc0c296c4,gp3
+
+2) ebs volume resize, input file needs to be made in following format
+
+vol_id,desired_volume_size(in GiB)
+vol_id_2,desired_volume_size_2(in GiB)
+Ex: vol-053b045bbc0c296c4,40
+
+Log file is created and appended for every execution in the script's path"""
+
+import boto3
+import os
+import mpe_utils
+import argparse
+import time
+import pytz
+from datetime import datetime
+from botocore.exceptions import ClientError
+
+
+
+# AWS EC2 client
+ec2_client = boto3.client('ec2')
+
+# Volume Conversion Guidelines (updated valid conversions)
+VALID_CONVERSIONS = {
+    'gp2': ['gp3'],  # gp2 can be converted to gp3
+    'gp3': ['gp2'],  # gp3 can be converted to gp2
+    'io1': ['io2', 'gp2', 'gp3'],  # io1 can be converted to io2, gp2, or gp3
+    'io2': ['io1'],  # io2 can be converted to io1
+    'st1': ['sc1', 'gp2', 'gp3'],  # st1 can be converted to sc1, gp2, or gp3
+    'sc1': ['st1', 'gp2', 'gp3'],  # sc1 can be converted to st1, gp2, or gp3
+}
+
+def get_all_volumes():
+    """Retrieve all volumes in the AWS account."""
+    try:
+        response = ec2_client.describe_volumes()
+        mpe_utils.log_info("Successfully retrieved volumes.")
+        return response['Volumes']
+    except ClientError as e:
+        mpe_utils.log_error(f"Error retrieving volumes: {e}", exc_info=True)
+        return []
+
+def modify_volume_type(volume_id, current_volume_type, new_volume_type):
+    """Modify the volume type of an existing EBS volume."""
+    try:
+        if current_volume_type == new_volume_type:
+            mpe_utils.log_info(f"Volume {volume_id} is already of type {new_volume_type}. No changes are needed.")
+            return True
+
+        # Proceed to modify the volume
+        response = ec2_client.modify_volume(
+            VolumeId=volume_id,
+            VolumeType=new_volume_type
+        )
+        mpe_utils.log_info(f"Volume {volume_id} is being converted to {new_volume_type}.")
+        return response['VolumeModification']['ModificationState'] == 'modifying'
+    except ClientError as e:
+        mpe_utils.log_error(f"Error modifying volume {volume_id}: {e}", exc_info=True)
+        return False
+
+def is_conversion_valid(current_volume_type, new_volume_type):
+    """Check if the volume type conversion is valid."""
+    if new_volume_type not in VALID_CONVERSIONS.get(current_volume_type, []):
+        mpe_utils.log_warning(f"Invalid conversion: {current_volume_type} to {new_volume_type}. Conversion not allowed.")
+        return False
+    return True
+
+def process_file_input(file_path):
+    """Process input from a text file containing volume IDs and desired volume types."""
+    volumes_to_process = []
+    try:
+        with open(file_path, 'r') as file:
+            for line in file:
+                line = line.strip()
+                if line:
+                    volume_id, new_volume_type = line.split(',')
+                    volumes_to_process.append((volume_id, new_volume_type))
+        mpe_utils.log_info(f"Successfully read {len(volumes_to_process)} volume entries from the file.")
+        return volumes_to_process
+    except FileNotFoundError:
+        mpe_utils.log_error(f"File {file_path} not found.")
+        return []
+    except Exception as e:
+        mpe_utils.log_error(f"Error reading file {file_path}: {e}", exc_info=True)
+        return []
+
+def process_resize_input(file_path):
+    """Process input from a text file containing volume IDs and desired sizes."""
+    volumes_to_resize = []
+    try:
+        with open(file_path, 'r') as file:
+            for line in file:
+                line = line.strip()
+                if line:
+                    volume_id, desired_size = line.split(',')
+                    volumes_to_resize.append((volume_id, int(desired_size)))
+        mpe_utils.log_info(f"Successfully read {len(volumes_to_resize)} volume entries from the file.")
+        return volumes_to_resize
+    except FileNotFoundError:
+        mpe_utils.log_error(f"File {file_path} not found.")
+        return []
+    except Exception as e:
+        mpe_utils.log_error(f"Error reading file {file_path}: {e}", exc_info=True)
+        return []
+
+def resize_volume(volume_id, desired_size):
+    """Resize the EBS volume to the desired size."""
+    try:
+        response = ec2_client.modify_volume(
+            VolumeId=volume_id,
+            Size=desired_size
+        )
+        mpe_utils.log_info(f"Volume {volume_id} is being resized to {desired_size} GiB.")
+        return response['VolumeModification']['ModificationState'] == 'modifying'
+    except ClientError as e:
+        mpe_utils.log_error(f"Error resizing volume {volume_id}: {e}", exc_info=True)
+        return False
+
+def delete_volume(volume_id):
+    """Delete the specified EBS volume."""
+    try:
+        response = ec2_client.delete_volume(VolumeId=volume_id)
+        mpe_utils.log_info(f"Volume {volume_id} is being deleted.")
+        return response
+    except ClientError as e:
+        mpe_utils.log_error(f"Error deleting volume {volume_id}: {e}", exc_info=True)
+        return None
+
+def main():
+    # Set up argument parsing
+    parser = argparse.ArgumentParser(description="EBS Volume Conversion, Resizing, and Deletion Tool.")
+    parser.add_argument("-i", "--input", required=True, help="Path to the input file (e.g., vol.txt).")
+    parser.add_argument("-a", "--action", choices=["RESIZE", "CONVERT", "DELETE"], help="Action to perform: 'RESIZE', 'CONVERT', or 'DELETE'.")
+
+    args = parser.parse_args()
+
+    print("\nWelcome to the AWS EBS Volume Conversion, Resizing, and Deletion Tool!") 
+    # Setting timezone to ist
+    ist_tz = pytz.timezone('Asia/Kolkata')
+    # Get the current timestamp and append it with the text(scriptname)
+    current_timestamp = datetime.now(ist_tz).strftime('%d-%m-%Y %H:%M:%S')
+    text = os.path.basename(__file__)
+ 
+    # Combine the timestamp and text together
+    combined = f"{current_timestamp} - {text}"
+    mpe_utils.setup_logging(combined)
+    
+    print(f"Action: {args.action if args.action else 'None'} - Input file: {args.input}")
+    
+    # Read-only mode if no action specified
+    if args.action is None:
+        print("\nNo action specified. Running in read-only mode...")
+        volumes_to_process = process_file_input(args.input)
+        if not volumes_to_process:
+            print("No valid volumes found in the file. Exiting.")
+            return
+        else:
+            print(f"\n{len(volumes_to_process)} volume entries read successfully from the file.")
+
+        for volume_id, _ in volumes_to_process:
+            mpe_utils.log_info(f"Processing file input: Volume {volume_id}")
+            print(f"\nProcessing volume {volume_id} from file input...")
+
+            volume = next((v for v in get_all_volumes() if v['VolumeId'] == volume_id), None)
+            if not volume:
+                mpe_utils.log_error(f"Volume {volume_id} not found.")
+                print(f"Error: Volume {volume_id} not found.")
+                continue
+
+            print(f"Volume ID: {volume['VolumeId']}")
+            print(f"Current Type: {volume['VolumeType']}")
+            print(f"Current Size: {volume['Size']} GiB")
+            print(f"State: {volume['State']}")
+
+    elif args.action == 'CONVERT':
+        volumes_to_process = process_file_input(args.input)
+        if not volumes_to_process:
+            print("No valid volumes found in the file for conversion. Exiting.")
+            return
+        else:
+            print(f"\n{len(volumes_to_process)} volume entries read successfully from the file for conversion.")
+
+        for volume_id, new_volume_type in volumes_to_process:
+            mpe_utils.log_info(f"Processing file input: Volume {volume_id} to be converted to {new_volume_type}")
+            print(f"\nProcessing volume {volume_id} from file input...")
+
+            volume = next((v for v in get_all_volumes() if v['VolumeId'] == volume_id), None)
+            if not volume:
+                mpe_utils.log_error(f"Volume {volume_id} not found.")
+                print(f"Error: Volume {volume_id} not found.")
+                continue
+            current_volume_type = volume['VolumeType']
+
+            if is_conversion_valid(current_volume_type, new_volume_type):
+                conversion_success = modify_volume_type(volume_id, current_volume_type, new_volume_type)
+                if conversion_success:
+                    mpe_utils.log_info(f"Successfully modified volume {volume_id} to {new_volume_type}.")
+                    print(f"Volume {volume_id} successfully converted to {new_volume_type}.")
+                else:
+                    mpe_utils.log_error(f"Failed to modify volume {volume_id} to {new_volume_type}.")
+                    print(f"Error modifying volume {volume_id}.")
+            else:
+                mpe_utils.log_error(f"Skipping conversion for volume {volume_id}: Invalid type conversion.")
+
+    elif args.action == 'RESIZE':
+        volumes_to_resize = process_resize_input(args.input)
+        if not volumes_to_resize:
+            print("No valid input format found in the input file for resizing. Exiting.")
+            return
+        else:
+            print(f"\n{len(volumes_to_resize)} volume entries read successfully from the file for resizing.")
+
+        for volume_id, desired_size in volumes_to_resize:
+            mpe_utils.log_info(f"Processing file input: Volume {volume_id} to be resized to {desired_size} GiB")
+            print(f"\nProcessing volume {volume_id} from file input...")
+
+            volume = next((v for v in get_all_volumes() if v['VolumeId'] == volume_id), None)
+            if not volume:
+                mpe_utils.log_error(f"Volume {volume_id} not found.")
+                print(f"Error: Volume {volume_id} not found.")
+                continue
+
+            resize_success = resize_volume(volume_id, desired_size)
+            if resize_success:
+                mpe_utils.log_info(f"Successfully resized volume {volume_id} to {desired_size} GiB.")
+                print(f"Volume {volume_id} successfully resized to {desired_size} GiB.")
+            else:
+                mpe_utils.log_error(f"Failed to resize volume {volume_id} to {desired_size} GiB.")
+                print(f"Error resizing volume {volume_id}.")
+
+    elif args.action == 'DELETE':
+        volumes_to_delete = process_file_input(args.input)
+        if not volumes_to_delete:
+            print("No valid volume IDs found in the input file for deletion. Exiting.")
+            return
+        else:
+            print(f"\n{len(volumes_to_delete)} volume entries read successfully from the file for deletion.")
+
+        for volume_id, _ in volumes_to_delete:
+            mpe_utils.log_info(f"Processing file input: Volume {volume_id} for deletion.")
+            print(f"\nProcessing volume {volume_id} from file input...")
+
+            volume = next((v for v in get_all_volumes() if v['VolumeId'] == volume_id), None)
+            if not volume:
+                mpe_utils.log_error(f"Volume {volume_id} not found.")
+                print(f"Error: Volume {volume_id} not found.")
+                continue
+
+            delete_response = delete_volume(volume_id)
+            if delete_response:
+                mpe_utils.log_info(f"Successfully deleted volume {volume_id}.")
+                print(f"Volume {volume_id} successfully deleted.")
+            else:
+                mpe_utils.log_error(f"Failed to delete volume {volume_id}.")
+                print(f"Error deleting volume {volume_id}.")
+
+# Ensure the script is called directly
+if __name__ == "__main__":
+    main()
