@@ -1,0 +1,706 @@
+endpoint
+
+"""
+delete_vpc_endpoint
+owner/author: Santhi Sri
+E-mail: santhisri.kankanala@fiserv.com
+
+This script displays details of VPC endpoints (ALL - Fetch all VPC endpoints for a given account and region, or user-provided list of VPC endpoint IDs).
+Once the `-a DELETE` flag is passed, it deletes the VPC endpoints which are not associated with any active route tables or subnets.
+
+Usage
+
+1. List all VPC Endpoints:   python delete_vpc_endpoint.py -i ALL
+
+2. Check VPC Endpoints from a File:    python delete_vpc_endpoint.py -i vpceids.txt
+
+- The file must contain **one VPC Endpoint ID per line**.
+- The delete_vpc_endpoint will display the details **only if found in AWS**.
+- If not found, it will print: Invalid Input.
+
+3. Delete VPC Endpoints from a File: python delete_vpc_endpoint.py -i vpceids.txt -a DELETE
+
+- **Deletion is only allowed if the VPC Endpoint has no active route tables or subnets.**
+- If the VPC Endpoint is active, deletion is prevented, and a warning is displayed.
+- If deletion is successful, it confirms with a success message.
+
+4. Delete VPC Endpoints from AWS (without a file)
+
+python delete_vpc_endpoint.py -i ALL -a DELETE
+- **The delete_vpc_endpoint does not delete active/used VPC Endpoints.**
+"""
+
+import boto3
+import sys
+import os
+import datetime
+import logging
+import argparse
+from botocore.exceptions import ClientError
+
+# Initialize EC2 client
+ec2 = boto3.client('ec2')
+
+# Directory for logs
+LOG_DIR = "logs"
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR)
+
+def setup_logger(action):
+    """
+    Setup logger with a unique log file for each action.
+    
+    :param action: The action being logged (e.g., 'LIST', 'DELETE').
+    
+    :return: A logger object.
+    """
+    log_filename = os.path.join(LOG_DIR, f"{action}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+    logging.basicConfig(
+        filename=log_filename,
+        filemode='w',
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+    return logging.getLogger()
+
+def read_endpoint_file(file_path):
+    """
+    Read input file and return a list of VPC endpoint IDs.
+    
+    :param file_path: The path to the input file.
+    
+    :return: A list of VPC endpoint IDs.
+    """
+    endpoints = []
+    try:
+        with open(file_path, "r") as file:
+            for line in file:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    endpoints.append(line)
+        return endpoints
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        sys.exit(1)
+
+def get_endpoint_details(endpoint_id):
+    """
+    Fetch and return details of a VPC endpoint.
+    
+    :param endpoint_id: The ID of the VPC endpoint to fetch details for.
+    
+    :return: A dictionary containing VPC endpoint details, or None if an error occurs.
+    """
+    try:
+        response = ec2.describe_vpc_endpoints(VpcEndpointIds=[endpoint_id])
+        endpoint = response['VpcEndpoints'][0]
+        return endpoint
+    except Exception as e:
+        print(f"Error fetching details for VPC endpoint {endpoint_id}: {e}")
+        return None
+
+def check_for_active_vpc_endpoint(endpoint_id):
+    """
+    Check if a VPC endpoint has active route tables or subnets.
+    
+    :param endpoint_id: The ID of the VPC endpoint to check.
+    
+    :return: A tuple containing:
+             - A boolean indicating if the VPC endpoint has active route tables or subnets.
+             - A list of active route table IDs.
+             - A list of active subnet IDs.
+    """
+    active_vpc_endpoint = False
+    route_table_details = []
+    subnet_details = []
+
+    try:
+        endpoint = get_endpoint_details(endpoint_id)
+        if endpoint:
+            route_table_details = endpoint.get('RouteTableIds', [])
+            subnet_details = endpoint.get('SubnetIds', [])
+            
+            if route_table_details or subnet_details:
+                active_vpc_endpoint = True
+    except ClientError:
+        pass
+
+    return active_vpc_endpoint, route_table_details, subnet_details
+
+def delete_vpc_endpoint(endpoint_id):
+    """
+    Delete a VPC endpoint.
+    
+    :param endpoint_id: The ID of the VPC endpoint to delete.
+    
+    This function attempts to delete the specified VPC endpoint.
+    If the deletion is successful, it prints a success message.
+    If an error occurs during deletion, it catches the ClientError exception and prints an error message.
+    """
+    active_vpc_endpoint, route_table_details, subnet_details = check_for_active_vpc_endpoint(endpoint_id)
+    
+    if active_vpc_endpoint:
+        print(f"\nERROR: Cannot delete VPC Endpoint {endpoint_id} due to active attached route tables/subnets")
+        if route_table_details:
+            print("  - Active Route Tables:")
+            for rt in route_table_details:
+                print(f"    * {rt}")
+        if subnet_details:
+            print("  - Active Subnets:")
+            for subnet in subnet_details:
+                print(f"    * {subnet}")
+        print("WARNING! Please ensure attached route tables/subnets are deleted from the VPC endpoint before deleting it.\n")
+    else:
+        try:
+            ec2.delete_vpc_endpoints(VpcEndpointIds=[endpoint_id])
+            print(f"SUCCESS: Deleted VPC Endpoint: {endpoint_id}")
+        except ClientError as e:
+            print(f"ERROR: Failed to delete VPC Endpoint {endpoint_id}: {e}")
+
+def main():
+    """
+    Main function to handle input parameters and process VPC Endpoints.
+    
+    This function parses command-line arguments to determine the input method and action to perform.
+    It lists all VPC Endpoints or reads VPC Endpoint IDs from a file, and optionally deletes unused VPC Endpoints.
+    """
+    parser = argparse.ArgumentParser(description="Manage AWS VPC Endpoints")
+    parser.add_argument('-i', '--input', required=True, help="Specify 'all' or a filename containing VPC Endpoint IDs")
+    parser.add_argument('-a', '--action', choices=['DELETE'], help="Specify DELETE to remove VPC Endpoints")
+    args = parser.parse_args()
+    
+    param = args.input.lower()
+    action = args.action
+    deletable_endpoints = []
+    
+    if param == "all":
+        # Fetch all VPC Endpoints in the region
+        print("\n------------------------------------------------------------")
+        print("               LISTING ALL VPC ENDPOINTS                     ")
+        print("------------------------------------------------------------\n")
+        vpc_endpoints = describe_vpc_endpoints()
+        
+        if not vpc_endpoints:
+            print("No VPC Endpoints found in the region.")
+            return
+        
+        for endpoint in vpc_endpoints:
+            endpoint_id = endpoint['VpcEndpointId']
+            service_name = endpoint['ServiceName']
+            state = endpoint['State']
+            vpc_id = endpoint['VpcId']
+            active, route_table_details, subnet_details = check_for_active_vpc_endpoint(endpoint_id)
+            print("*****************************************************************************")
+            print(f"VPC Endpoint: {endpoint_id}")
+            print(f"  Service Name: {service_name}")
+            print(f"  VPC ID: {vpc_id}")
+            print(f"  State: {state}")
+            if active:
+                print(f"WARNING! Cannot delete {endpoint_id} due to below active route tables/subnets attached:")
+                if route_table_details:
+                    print("    - Active Route Tables:", route_table_details)
+                if subnet_details:
+                    print("    - Active Subnets:", subnet_details)
+
+                print("To DELETE, Please review above route tables/subnets and delete them first before deleting the VPC Endpoint.")
+                print("************************************************")
+            else:
+                if action != "DELETE":
+                    print(f"INFO: {endpoint_id} can be deleted safely.")
+                deletable_endpoints.append(endpoint_id)
+                if action != "DELETE":
+                    print("To DELETE, Please pass -a DELETE as 2nd argument.")
+        
+    elif os.path.isfile(param):
+        # Fetch VPC Endpoints from input file
+        with open(param, 'r') as file:
+            endpoint_ids = [line.strip() for line in file.readlines()]
+        
+        for endpoint_id in endpoint_ids:
+            endpoint = get_endpoint_details(endpoint_id)
+            if endpoint:
+                service_name = endpoint['ServiceName']
+                state = endpoint['State']
+                vpc_id = endpoint['VpcId']
+                active, route_table_details, subnet_details = check_for_active_vpc_endpoint(endpoint_id)
+                print("*****************************************************************************")
+                print(f"VPC Endpoint: {endpoint_id}")
+                print(f"  Service Name: {service_name}")
+                print(f"  VPC ID: {vpc_id}")
+                print(f"  State: {state}")
+                if active:
+                    print(f"WARNING! Cannot delete {endpoint_id} due to below active route tables/subnets attached:")
+                    if route_table_details:
+                        print("    - Active Route Tables:", route_table_details)
+                    if subnet_details:
+                        print("    - Active Subnets:", subnet_details)
+                    print("To DELETE, Please review above route tables/subnets and delete them first before deleting the VPC Endpoint.")
+                    print("************************************************")
+                else:
+                    if action != "DELETE":
+                        print(f"INFO: {endpoint_id} can be deleted safely.")
+                    deletable_endpoints.append(endpoint_id)
+                    if action != "DELETE":
+                        print("To DELETE, Please pass -a DELETE as 2nd argument.")
+            else:
+                print(f"Invalid given VPC Endpoint Detail: {endpoint_id}")
+    
+    if action == "DELETE":
+        # Proceed with deletion of eligible VPC Endpoints
+        for endpoint_id in deletable_endpoints:
+            delete_vpc_endpoint(endpoint_id)
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+elb:
+
+"""delete_elb_owner/author:Santhi Sri
+E-mail:santhisri.kankanala@fiserv.com
+
+This script display detail of ELBs(ALL - Fetch all ELBs for given account and region or user provided list of ELBs)
+Once -a as DELETE passed, then it deletes the ELB which is not asscoayed with any Active Listener or Target Groups.
+
+Usage
+
+1. List all Load Balancers:   python delete_elb.py -i ALL
+
+2. Check Load Balancers from a File:    python delete_elb.py -i elbids.txt
+
+- The file must contain **one Load Balancer ARN or Name (of CLB) per line**.
+- The delete_elb will display the details **only if found in AWS**.
+- If not found, it will print: Invalid Input.
+
+3. Delete Load Balancers from a File: python delete_elb.py -i elbids.txt -a DELETE
+
+- **Deletion is only allowed if the Load Balancer has no active Listeners or Target Groups.**
+- If the Load Balancer is active, deletion is prevented, and a warning is displayed.
+- If deletion is successful, it confirms with a success message.
+
+4. Delete Load Balancers from AWS (without a file)** 
+
+python delete_elb.py -i ALL -a DELETE
+- **The delete_elb does not delete active/used Load Balancers."""
+
+
+import boto3
+import argparse
+import os
+from botocore.exceptions import ClientError
+
+# Set AWS region from environment variable or session
+AWS_REGION = os.getenv('AWS_REGION', None)
+if not AWS_REGION:
+    session = boto3.Session()
+    AWS_REGION = session.region_name
+
+# Function to describe all ALB/NLB and Classic ELBs in the region
+def describe_load_balancers():
+    elb_client = boto3.client('elbv2', region_name=AWS_REGION)
+    classic_elb_client = boto3.client('elb', region_name=AWS_REGION)
+    
+    try:
+        alb_nlb_response = elb_client.describe_load_balancers()
+        alb_nlb_load_balancers = alb_nlb_response.get('LoadBalancers', [])
+    except ClientError:
+        alb_nlb_load_balancers = []
+    
+    try:
+        classic_response = classic_elb_client.describe_load_balancers()
+        classic_load_balancers = classic_response.get('LoadBalancerDescriptions', [])
+    except ClientError:
+        classic_load_balancers = []
+    
+    return alb_nlb_load_balancers, classic_load_balancers
+
+# Function to check if a Load Balancer has active target groups or listeners
+def check_for_active_elb(load_balancer_arn):
+    elb_client = boto3.client('elbv2', region_name=AWS_REGION)
+    active_elb = False
+    target_group_details = []
+    listener_details = []
+
+    try:
+        # Fetch associated target groups
+        tg_response = elb_client.describe_target_groups(LoadBalancerArn=load_balancer_arn)
+        for tg in tg_response['TargetGroups']:
+            target_group_details.append(f"{tg['TargetGroupName']} (ARN: {tg['TargetGroupArn']})")
+        if target_group_details:
+            active_elb = True
+    except ClientError:
+        pass
+    
+    try:
+        # Fetch associated listeners
+        listener_response = elb_client.describe_listeners(LoadBalancerArn=load_balancer_arn)
+        for listener in listener_response['Listeners']:
+            listener_details.append(f"Port {listener['Port']} - Protocol {listener['Protocol']}")
+        if listener_details:
+            active_elb = True
+    except ClientError:
+        pass
+
+    return active_elb, target_group_details, listener_details
+
+# Function to delete a Load Balancer
+def delete_load_balancer(load_balancer_arn_or_name, is_classic=False):
+    if is_classic:
+        elb_client = boto3.client('elb', region_name=AWS_REGION)
+        try:
+            elb_client.delete_load_balancer(LoadBalancerName=load_balancer_arn_or_name)
+            print(f"SUCCESS: Deleted Classic Load Balancer: {load_balancer_arn_or_name}")
+        except ClientError as e:
+            print(f"ERROR: Failed to delete Classic Load Balancer {load_balancer_arn_or_name}: {e}")
+    else:
+        elb_client = boto3.client('elbv2', region_name=AWS_REGION)
+        active_elb, tg_details, listener_details = check_for_active_elb(load_balancer_arn_or_name)
+        
+        if active_elb:
+            print(f"\nERROR: Cannot delete Load Balancer {load_balancer_arn_or_name} due to active attached listener/target/groups")
+            if tg_details:
+                print("  - Active Target Groups:")
+                for tg in tg_details:
+                    print(f"    * {tg}")
+            if listener_details:
+                print("  - Active Listeners:")
+                for listener in listener_details:
+                    print(f"    * {listener}")
+            print("WARNING! Please ensure attached target groups/listeners are deleted from ELB before deleteing ELB.\n")
+        else:
+            try:
+                elb_client.delete_load_balancer(LoadBalancerArn=load_balancer_arn_or_name)
+                print(f"SUCCESS: Deleted ELB: {load_balancer_arn_or_name}")
+            except ClientError as e:
+                print(f"ERROR: Failed to delete Load Balancer {load_balancer_arn_or_name}: {e}")
+
+# Main function to handle input parameters and process Load Balancers
+def main():
+    parser = argparse.ArgumentParser(description="Manage AWS Load Balancers")
+    parser.add_argument('-i', '--input', required=True, help="Specify 'all' or a filename containing Load Balancer ARNs")
+    parser.add_argument('-a', '--action', choices=['DELETE'], help="Specify DELETE to remove Load Balancers")
+    args = parser.parse_args()
+    
+    param = args.input.lower()
+    action = args.action
+    deletable_lbs = []
+    
+    if param == "all":
+        # Fetch all Load Balancers in the region
+        print("\n------------------------------------------------------------")
+        print("               LISTING ALL LOAD BALANCERS                     ")
+        print("------------------------------------------------------------\n")
+        alb_nlb_load_balancers, classic_load_balancers = describe_load_balancers()
+        
+        if not alb_nlb_load_balancers and not classic_load_balancers:
+            print("No Load Balancers found in the region.")
+            return
+        
+        for lb in alb_nlb_load_balancers:
+            #print(lb)
+            lb_arn = lb['LoadBalancerArn']
+            state = lb['State']['Code']
+            elb_type = lb['Type']
+            active, tg_details, listener_details = check_for_active_elb(lb_arn)
+            print("*****************************************************************************")
+            print(f"Load Balancer: {lb_arn}, Type: {elb_type}, State: {state}")
+            if active:
+                print(f"WARNING! Cannot delete {lb_arn} due to below active listener/target groups atached:")
+                if tg_details:
+                    print("    - Active Target Groups:", tg_details)
+                if listener_details:
+                    print("    - Active Listeners:", listener_details)
+
+                print("To DELETE, Please review above Listeners/Target groups and delete it first before deleteing the ELB.")
+                print("************************************************")
+            else:
+                if action != "DELETE":
+                    print(f"INFO: {lb_arn} can be deleted safely.")
+                deletable_lbs.append(lb_arn)
+                if action != "DELETE":
+                    print("To DELETE, Please pass -a DELETE as 2nd argument.")
+        
+        for lb in classic_load_balancers:
+            print(f"Load Balancer: {lb['LoadBalancerName']}, Type: Classic, State: Available")
+            deletable_lbs.append(lb['LoadBalancerName'])
+        
+    elif os.path.isfile(param):
+        # Fetch Load Balancers from input file
+        with open(param, 'r') as file:
+            lb_ids = [line.strip() for line in file.readlines()]
+        
+        alb_nlb_load_balancers, classic_load_balancers = describe_load_balancers()
+        
+        for lb_arn in lb_ids:
+            found = False
+            for lb in alb_nlb_load_balancers:
+                if lb_arn == lb['LoadBalancerArn']:
+                    active, tg_details, listener_details = check_for_active_elb(lb_arn)
+                    print(f"Load Balancer: {lb_arn}, Type: ALB/NLB")
+                    if active:
+                        print("  - Cannot delete due to active services:")
+                        if tg_details:
+                            print("    - Active Target Groups:", tg_details)
+                        if listener_details:
+                            print("    - Active Listeners:", listener_details)
+                    else:
+                        deletable_lbs.append(lb_arn)
+                    found = True
+            if not found:
+                print(f"Invalid given Load Balancer Detail: {lb_arn}")
+    
+    if action == "DELETE":
+        # Proceed with deletion of eligible Load Balancers
+        for lb_arn in deletable_lbs:
+            delete_load_balancer(lb_arn, is_classic=not lb_arn.startswith("arn:"))
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+nat
+
+"""delete_nat.py owner/author:Santhi Sri
+E-mail:santhisri.kankanala@fiserv.com
+
+
+Python script to identify and delete unused NAT Gateways (NAT Gateway not associated with any route table) based user given NAT Gateways.
+
+Features:
+
+Identify NAT Gateways: Lists all NAT Gateways/given NAT Gateways and its used status in your AWS account
+
+Check Route Tables: Checks if any route table is associated with each NAT Gateway.
+
+DELETE action deletes Unused NAT Gateways: Deletes NAT Gateways with no associated route tables.
+
+Release Elastic IPs: Releases Elastic IPs associated with deleted NAT Gateways.
+
+Usage:
+
+List All NAT Gateways   :python delete_nat_gateways.py -i ALL
+
+List NAT Gateways from a File:  python delete_nat_gateways.py -i natid.txt
+ 
+Delete NAT Gateways from a aws region (if no active routes): python delete_nat_gateways.py -i all -a DELETE
+
+Delete NAT Gateways from a File: python delete_nat_gateways.py -i natid.txt -a DELETE """
+
+
+
+import boto3
+import argparse
+import time
+import os
+from botocore.exceptions import ClientError
+
+# Get AWS region from environment variables or default AWS profile
+AWS_REGION = os.getenv('AWS_REGION', None)
+
+if not AWS_REGION:
+    session = boto3.Session()
+    AWS_REGION = session.region_name
+
+def describe_nat_gateways():
+    """
+    Fetches all NAT Gateways from AWS.
+    
+    :return: A list of NAT Gateways in the specified AWS region.
+    """
+    ec2_client = boto3.client('ec2', region_name=AWS_REGION)
+    response = ec2_client.describe_nat_gateways()
+    return response['NatGateways']
+
+def check_route_tables(nat_gateway_id):
+    """
+    Checks if a NAT Gateway is associated with any route tables.
+    
+    :param nat_gateway_id: The ID of the NAT Gateway to check.
+    
+    :return: A list of route tables associated with the specified NAT Gateway.
+    """
+
+    ec2_client = boto3.client('ec2', region_name=AWS_REGION)
+    response = ec2_client.describe_route_tables(
+        Filters=[{'Name': 'route.nat-gateway-id', 'Values': [nat_gateway_id]}]
+    )
+    return response['RouteTables']
+
+def delete_nat_gateway(nat_gateway_id):
+    """
+    Deletes the specified NAT Gateway.
+    
+    :param nat_gateway_id: The ID of the NAT Gateway to delete.
+    
+    This function attempts to delete the NAT Gateway specified by the given ID.
+    If the deletion is successful, it prints a success message.
+    If an error occurs during deletion, it catches the ClientError exception and prints an error 
+    message.
+    """
+    ec2_client = boto3.client('ec2', region_name=AWS_REGION)
+    try:
+        ec2_client.delete_nat_gateway(NatGatewayId=nat_gateway_id)
+        print(f"Deleted NAT Gateway: {nat_gateway_id}")
+    except ClientError as e:
+        print(f"Error deleting NAT Gateway {nat_gateway_id}: {e}")
+
+def wait_for_nat_deletion(nat_gateway_id):
+    """
+    Waits for NAT Gateway to be fully deleted before releasing the Elastic IP.
+    
+    :param nat_gateway_id: The ID of the NAT Gateway to wait for deletion.
+    
+    This function checks the status of the specified NAT Gateway at regular intervals.
+    It waits until the NAT Gateway is fully deleted and then informs the user about the successful
+     deletion.
+    If an error occurs while checking the status, it catches the ClientError exception and prints
+     an error message.
+    """
+    ec2_client = boto3.client('ec2', region_name=AWS_REGION)
+    print(f"Waiting for NAT Gateway {nat_gateway_id} to be deleted...")
+    while True:
+        try:
+            response = ec2_client.describe_nat_gateways(
+                Filters=[{'Name': 'nat-gateway-id', 'Values': [nat_gateway_id]}]
+            )
+            if not response['NatGateways'] or response['NatGateways'][0]['State'] == 'deleted':
+                print(f"NAT Gateway {nat_gateway_id} is fully deleted.") # Inform user about successful deletion
+                break
+        except ClientError as e:
+            print(f"Error checking NAT Gateway status: {e}")
+            break
+        time.sleep(10)
+
+def release_elastic_ip(allocation_id):
+    """
+    Releases the specified Elastic IP.
+    
+    :param allocation_id: The allocation ID of the Elastic IP to release.
+    
+    This function attempts to release the Elastic IP specified by the given allocation ID.
+    If the release is successful, it prints a success message.
+    If an error occurs during release, it catches the ClientError exception and prints an error
+     message.
+    """
+    ec2_client = boto3.client('ec2', region_name=AWS_REGION)
+    try:
+        ec2_client.release_address(AllocationId=allocation_id)
+        print(f"Released Elastic IP: {allocation_id}")
+    except ClientError as e:
+        print(f"Error releasing Elastic IP {allocation_id}: {e}")
+
+def get_nat_details_from_file(filename):
+    """
+    Reads NAT Gateway IDs from a file and fetches details if they exist.
+    
+    :param filename: The name of the file containing NAT Gateway IDs.
+    
+    :return: A list of tuples containing NAT Gateway IDs and their associated Elastic IP 
+      allocation IDs.
+    """
+    try:
+        with open(filename, 'r') as file:
+            nat_ids = [line.strip() for line in file.readlines()]
+    except FileNotFoundError:
+        print(f"Error: The file '{filename}' was not found.")
+        return None
+    
+    if not nat_ids:
+        print("Error: The input file is empty.")
+        return None
+    
+    all_nat_gateways = describe_nat_gateways()
+    found_nat_gateways = []
+    unmatched_nats = []
+
+    for nat_id in nat_ids:
+        found = False
+        for nat_gateway in all_nat_gateways:
+            if nat_id == nat_gateway['NatGatewayId']:
+                state = nat_gateway['State']
+                allocation_id = nat_gateway.get('NatGatewayAddresses', [{}])[0].get('AllocationId')
+                route_tables = check_route_tables(nat_id)
+                route_info = ', '.join([rt['RouteTableId'] for rt in route_tables]) if route_tables else "No associated Route Tables"
+                
+                print(f"NAT Gateway: {nat_id} | State: {state} | Elastic IP: {allocation_id} | Routes: {route_info}")
+                
+                if not route_tables and state != 'deleted':
+                    found_nat_gateways.append((nat_id, allocation_id))
+                found = True
+                break
+        
+        if not found:
+            unmatched_nats.append(nat_id)
+
+    if unmatched_nats:
+        print("\nINVALID NAT GATEWAY IDS FROM FILE")
+        for nat_id in unmatched_nats:
+            print(f"Invalid NAT Gateway ID: {nat_id}")
+    
+    return found_nat_gateways
+
+def main():
+    """
+    Main function to execute the script.
+    
+    This function parses command-line arguments to determine the input method and action to 
+    perform.
+    It lists all NAT Gateways or reads NAT Gateway IDs from a file, and optionally deletes unused
+     NAT Gateways.
+    """
+    parser = argparse.ArgumentParser(description="Manage AWS NAT Gateways")
+    parser.add_argument('-i', '--input', required=True, help="Specify 'ALL' or a filename containing NAT Gateway IDs")
+    parser.add_argument('-a', '--action', choices=['DELETE'], help="Specify DELETE to remove NAT Gateways")
+    args = parser.parse_args()
+
+    param = args.input.lower()
+    action = args.action
+    
+    if not param:
+        return
+
+    if param == "all":
+        all_nat_gateways = describe_nat_gateways()
+        deletable_gateways = []
+        print("\n------------------------------------------------------------")
+        print("               LISTING ALL NAT GATEWAYS                     ")
+        print("------------------------------------------------------------\n")
+        
+        for nat_gateway in all_nat_gateways:
+            nat_gateway_id = nat_gateway['NatGatewayId']
+            state = nat_gateway['State']
+            allocation_id = nat_gateway.get('NatGatewayAddresses', [{}])[0].get('AllocationId')
+            route_tables = check_route_tables(nat_gateway_id)
+            route_info = ', '.join([rt['RouteTableId'] for rt in route_tables]) if route_tables else "No associated Route Tables"
+            
+            print(f"NAT Gateway: {nat_gateway_id} | State: {state} | Elastic IP: {allocation_id if allocation_id else 'None'} | Routes: {route_info}")
+            
+            if not route_tables:
+                deletable_gateways.append((nat_gateway_id, allocation_id))
+        
+        if action == "DELETE":
+            for nat_gateway_id, allocation_id in deletable_gateways:
+                delete_nat_gateway(nat_gateway_id)
+                wait_for_nat_deletion(nat_gateway_id)
+                if allocation_id:
+                    release_elastic_ip(allocation_id)
+    else:
+        deletable_gateways = get_nat_details_from_file(param)
+        if not deletable_gateways:
+            return
+        if action == "DELETE":
+            for nat_gateway_id, allocation_id in deletable_gateways:
+                delete_nat_gateway(nat_gateway_id)
+                wait_for_nat_deletion(nat_gateway_id)
+                if allocation_id:
+                    release_elastic_ip(allocation_id)
+
+if __name__ == "__main__":
+    main()
+
