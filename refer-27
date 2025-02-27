@@ -1,0 +1,196 @@
+
+"""
+script_owner/author:Sriram S
+E-mail:sriram.sundaravaradhan@fiserv.com
+[i] needs mpe_utils.py in the same execution directory
+update_rds.py has been created to READ the given rds detail (Default), RESIZE and DELETE it if it is not required.
+Note: DELETE action does not take rds snap shot. So please take the snapshot before executing this acction.
+
+input file format for resizing
+db-instance-1,db.m5.large
+db-instance-2,db.t3.medium
+
+input file format for deleting & read only mode
+db-instance-1
+db-instance-2
+
+Usage Ex:
+1. python update_rds.py -i input.txt
+2. python update_rds.py -i input.txt -a RESIZE/DELETE
+
+Log file is created and appended for every execution in the script's path, file name has respective date/time stamp
+"""
+
+import argparse
+import boto3
+import mpe_utils
+from botocore.exceptions import ClientError
+
+# Initialize a session using Amazon RDS
+rds_client = boto3.client('rds')
+
+def get_instance_details(db_instance_identifier):
+    """
+    Fetch the details of an RDS instance, such as its size and state.
+    
+    :param db_instance_identifier: The identifier of the RDS instance.
+    :return: A dictionary with the instance's size and state.
+    """
+    try:
+        response = rds_client.describe_db_instances(DBInstanceIdentifier=db_instance_identifier)
+        db_instance = response['DBInstances'][0]
+        instance_size = db_instance['DBInstanceClass']
+        instance_state = db_instance['DBInstanceStatus']
+        return instance_size, instance_state
+    except ClientError as e:
+        mpe_utils.log_error(f"Error fetching details for instance {db_instance_identifier}: {e}")
+        return None, None
+
+def resize_rds_instance(db_instance_identifier, new_instance_type):
+    """
+    Resize the RDS instance to a new instance type.
+    
+    :param db_instance_identifier: The identifier of the RDS instance to resize.
+    :param new_instance_type: The new instance type (e.g., 'db.m5.large', 'db.t3.medium').
+    """
+    instance_size, instance_state = get_instance_details(db_instance_identifier)
+    
+    if instance_size is None:
+        return
+
+    mpe_utils.log_info(f"Instance {db_instance_identifier} - Current size: {instance_size}, State: {instance_state}.")
+    
+    # Check if the instance is in a resizable state
+    if instance_state != 'available':
+        mpe_utils.log_warning(f"Instance {db_instance_identifier} is not in a resizable state (current state: {instance_state}).")
+        return
+
+    try:
+        # Modify the RDS instance
+        response = rds_client.modify_db_instance(
+            DBInstanceIdentifier=db_instance_identifier,
+            DBInstanceClass=new_instance_type,
+            ApplyImmediately=True  # Apply changes immediately, may cause downtime
+        )
+        mpe_utils.log_info(f"Successfully initiated resize of RDS instance {db_instance_identifier} to {new_instance_type}.")
+        mpe_utils.log_debug(f"Response: {response}")
+    
+    except ClientError as e:
+        mpe_utils.log_error(f"Error resizing RDS instance {db_instance_identifier}: {e}")
+
+def delete_rds_instance(db_instance_identifier):
+    """
+    Delete an RDS instance.
+    
+    :param db_instance_identifier: The identifier of the RDS instance to delete.
+    """
+    instance_size, instance_state = get_instance_details(db_instance_identifier)
+    
+    if instance_size is None:
+        return
+
+    mpe_utils.log_info(f"Instance {db_instance_identifier} - Current size: {instance_size}, State: {instance_state}.")
+    
+    # Check if the instance is in a deletable state
+    if instance_state != 'available':
+        mpe_utils.log_warning(f"Instance {db_instance_identifier} is not in a deletable state (current state: {instance_state}).")
+        return
+
+    try:
+        # Delete the RDS instance
+        response = rds_client.delete_db_instance(
+            DBInstanceIdentifier=db_instance_identifier,
+            SkipFinalSnapshot=True  # Skip final snapshot before deletion
+        )
+        mpe_utils.log_info(f"Successfully initiated deletion of RDS instance {db_instance_identifier}.")
+        mpe_utils.log_debug(f"Response: {response}")
+    
+    except ClientError as e:
+        mpe_utils.log_error(f"Error deleting RDS instance {db_instance_identifier}: {e}")
+
+def read_rds_instance(db_instance_identifier):
+    """
+    READ an RDS instance.
+    
+    :param db_instance_identifier: The identifier of the RDS instance to get the detail.
+    """
+    instance_size, instance_state = get_instance_details(db_instance_identifier)
+    
+    if instance_size is None:
+        return
+
+    mpe_utils.log_info(f"Instance {db_instance_identifier} - Current size: {instance_size}, State: {instance_state}.")
+
+def process_input_file(file_path, action):
+    """
+    Process the input file containing RDS instance IDs and their target instance types or deletion requests.
+    
+    :param file_path: Path to the input file containing instance ID and target size or deletion request.
+    :param action: Action to perform ('RESIZE' or 'DELETE').
+    """
+    try:
+        with open(file_path, 'r') as file:
+            lines = file.readlines()
+        
+        for line in lines:
+            parts = line.strip().split(',')
+            if action == 'RESIZE' and len(parts) == 2:
+                db_instance_id, target_size = parts
+                mpe_utils.log_info(f"Processing instance {db_instance_id} with target size {target_size}...")
+                resize_rds_instance(db_instance_id, target_size)
+            elif action == 'DELETE' and len(parts) == 1:
+                db_instance_id = parts[0]
+                mpe_utils.log_info(f"Processing instance {db_instance_id} for deletion...")
+                delete_rds_instance(db_instance_id)
+            elif action == 'READ' and len(parts) == 1:
+                db_instance_id = parts[0]
+                mpe_utils.log_info(f"Getting instance {db_instance_id} Detail...")
+                read_rds_instance(db_instance_id)
+
+            else:
+                mpe_utils.log_warning(f"Skipping invalid line: {line.strip()}")
+    except FileNotFoundError as e:
+        mpe_utils.log_error(f"Input file {file_path} not found: {e}")
+    except Exception as e:
+        mpe_utils.log_error(f"Error reading input file {file_path}: {e}")
+
+def main():
+    # Set up command line argument parsing
+    parser = argparse.ArgumentParser(
+        description="This script resizes or deletes AWS RDS instances based on the details provided in the input file.",
+        epilog="Example usage: python py_file.py -i rds_instance_details.txt -a RESIZE --verbose"
+    )
+    
+    parser.add_argument(
+        "-i", "--input", 
+        required=True, 
+        help="Path to the input file containing RDS instance IDs and target sizes. Format: instance_id,target_size (e.g., db-instance-1,db.m5.large)"
+    )
+    
+    parser.add_argument(
+        "-a", "--action", 
+        choices=["RESIZE", "DELETE"], 
+        required=False, 
+        help="Action to perform (e.g., RESIZE or DELETE)."
+    )
+    
+    parser.add_argument(
+        "--verbose", 
+        action="store_true", 
+        help="Enable verbose logging (shows debug-level logs)."
+    )
+    
+    args = parser.parse_args()
+
+    # Set up logging based on the verbosity flag
+    mpe_utils.setup_logging()
+    
+    if args.action:
+        mpe_utils.log_info(f"Starting RDS instance action: {args.action} from file: {args.input}")
+        process_input_file(args.input, args.action)
+    else:
+        mpe_utils.log_info(f"Getting RDS Detail for DB identifiers present in file: {args.input}")
+        process_input_file(args.input, "READ")
+
+if __name__ == '__main__':
+    main()
