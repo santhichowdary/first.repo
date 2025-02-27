@@ -258,12 +258,11 @@ if __name__ == "__main__":
 
 
 elb:
-
-"""delete_elb_owner/author:Santhi Sri
+ """delete_elb_owner/author:Santhi Sri
 E-mail:santhisri.kankanala@fiserv.com
 
 This script display detail of ELBs(ALL - Fetch all ELBs for given account and region or user provided list of ELBs)
-Once -a as DELETE passed, then it deletes the ELB which is not asscoayed with any Active Listener or Target Groups.
+Once -a as DELETE passed, then it deletes the ELB which is not associated with any Active Listener or Target Groups.
 
 Usage
 
@@ -300,6 +299,11 @@ if not AWS_REGION:
 
 # Function to describe all ALB/NLB and Classic ELBs in the region
 def describe_load_balancers():
+    """
+    Fetches all ALB/NLB and Classic ELBs in the specified region.
+
+    :return: A tuple containing two lists - one for ALB/NLB load balancers and one for Classic load balancers.
+    """
     elb_client = boto3.client('elbv2', region_name=AWS_REGION)
     classic_elb_client = boto3.client('elb', region_name=AWS_REGION)
     
@@ -319,6 +323,16 @@ def describe_load_balancers():
 
 # Function to check if a Load Balancer has active target groups or listeners
 def check_for_active_elb(load_balancer_arn):
+    """
+    Checks if a Load Balancer has active target groups or listeners.
+
+    :param load_balancer_arn: The ARN of the Load Balancer to check.
+
+    :return: A tuple containing three elements:
+             - A boolean indicating if the Load Balancer has active target groups or listeners.
+             - A list of active target group details.
+             - A list of active listener details.
+    """
     elb_client = boto3.client('elbv2', region_name=AWS_REGION)
     active_elb = False
     target_group_details = []
@@ -348,6 +362,16 @@ def check_for_active_elb(load_balancer_arn):
 
 # Function to delete a Load Balancer
 def delete_load_balancer(load_balancer_arn_or_name, is_classic=False):
+    """
+    Deletes the specified Load Balancer.
+
+    :param load_balancer_arn_or_name: The ARN (for ALB/NLB) or Name (for Classic ELB) of the Load Balancer to delete.
+    :param is_classic: A boolean indicating if the Load Balancer is a Classic ELB.
+
+    This function attempts to delete the specified Load Balancer.
+    If the deletion is successful, it prints a success message.
+    If an error occurs during deletion, it catches the ClientError exception and prints an error message.
+    """
     if is_classic:
         elb_client = boto3.client('elb', region_name=AWS_REGION)
         try:
@@ -379,6 +403,12 @@ def delete_load_balancer(load_balancer_arn_or_name, is_classic=False):
 
 # Main function to handle input parameters and process Load Balancers
 def main():
+    """
+    Main function to handle input parameters and process Load Balancers.
+
+    This function parses command-line arguments to determine the input method and action to perform.
+    It lists all Load Balancers or reads Load Balancer IDs from a file, and optionally deletes unused Load Balancers.
+    """
     parser = argparse.ArgumentParser(description="Manage AWS Load Balancers")
     parser.add_argument('-i', '--input', required=True, help="Specify 'all' or a filename containing Load Balancer ARNs")
     parser.add_argument('-a', '--action', choices=['DELETE'], help="Specify DELETE to remove Load Balancers")
@@ -459,6 +489,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
 
 
 
