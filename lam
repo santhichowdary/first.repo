@@ -1,0 +1,586 @@
+
+## Resource: aws_lambda
+Provides a Lambda Function resource. Lambda allows you to trigger execution of code in response to events in AWS, enabling serverless backend solutions. The Lambda Function itself includes source code and runtime configuration.
+
+For information about Lambda and how to use it, see [What is AWS Lambda?](https://docs.aws.amazon.com/lambda/latest/dg/welcome.html)
+
+### Example Usage
+
+#### Basic Example
+Lambda function with code hosted in S3 bucket and predefined lambda role. 
+```json
+{
+    "stack_id": "test-lambda-stack",
+    "resource_prefix": "test-java",
+    "aws_region": "us-west-2",
+    
+    "resources":[
+        {
+            "resource_type": "aws_lambda",
+            "resource_id": "function1",
+            "handler": "AwsLambdaFunctions::alterPayload",
+            "s3_bucket_name": "my-test-lambda-bucket",
+            "s3_bucket_key": "dev/java-test.jar",
+            "memory_size": 256,
+            "runtime": "java17",
+            "timeout": 60,
+            "role_arn": "arn:aws:iam::123456789012:role/mycustomrole",
+            "env_vars": {
+                "key1": "value1"
+            },
+            "tags": {
+                "runtime": "java17",
+                "env": "test"
+            }
+        }
+    ]
+}
+
+```
+#### VPC-Attached with Custom Role 
+VPC attached Lambda function with local code bucket and custom lambda role. 
+```json
+{
+    "stack_id": "test-lambda-stack",
+    "resource_prefix": "test-java",
+    "aws_region": "us-west-2",
+    "vpc":
+    {
+        "name" : "vpc",
+        "id" : "vpc-0fe0ccb4f6f842818"
+    },
+    "resources":[
+        {
+            "resource_type": "aws_lambda",
+            "resource_id": "function1",
+            "handler": "AwsLambdaFunctions::alterPayload",
+            "handler": "AwsLambdaFunctions::alterPayload",
+            "code_path_local": "lambda_assets/java-test.jar",
+            "memory_size": 256,
+            "runtime": "java17",
+            "timeout": 60,
+            "role_arn": "${test-lambda-stack:lambda-role:arn}",
+            "env_vars": {
+                "key1": "value1"
+            },
+            "tags": {
+                "runtime": "java17",
+                "env": "test"
+            }
+        },
+        {
+            "resource_type": "aws_iam",
+            "resource_id": "lambda-role",
+            "assume_role_principal": "lambda.amazonaws.com",
+            "policies":[
+                {
+                    "inline_policies":[
+                        {
+                            "name" : "lambda-codeguru-policy",
+                            "path": "policies/lambda-codeguru-policy.json"
+                        }
+                    ]
+                },
+                {
+                    "managed_policy_arns":[
+                        "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+                        "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess",
+                        "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole",
+                        "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+                    ]
+                }
+            ]
+        }
+    ]
+}
+
+```
+
+#### Event Source (Triggers)
+Associate Event Sources(Triggers) with Lambda function. 
+```json
+{
+    "stack_id": "test-lambda-stack",
+    "resource_prefix": "test-java",
+    "aws_region": "us-west-2",
+    "vpc":
+    {
+        "name" : "vpc",
+        "id" : "vpc-0fe0ccb4f6f842818"
+    },
+    "resources":[
+        {
+            "resource_type": "aws_lambda",
+            "resource_id": "function1",
+            "handler": "AwsLambdaFunctions::alterPayload",
+            "handler": "AwsLambdaFunctions::alterPayload",
+            "code_path_local": "lambda_assets/java-test.jar",
+            "memory_size": 256,
+            "runtime": "java17",
+            "asyn_duration_seconds": 21600,
+            "timeout": 60,
+            "role_arn": "${test-lambda-stack:lambda-role:arn}",
+            "env_vars": {
+                "key1": "value1"
+            },
+            "tags": {
+                "runtime": "java17",
+                "env": "test"
+            },
+            "subscriptions":[
+                {
+                    "id": "sns-1",
+                    "<--sns_resource_arn": "arn:aws:sns:.....",
+                    "sns_resource_arn": "${test-java-lambda:lambda-sns-subscription-test:arn}"
+                },
+                {
+                    "id": "ddb-1",
+                    "<-both resource arn and stream arn are needed if streamiing is enabled on Table": null,
+                    "<--dynamodb_resource_arn": "arn:aws:dynamodb:.....",
+                    "dynamodb_resource_arn": "${test-java-lambda:my-table:arn}",
+                    "dynamodb_table_stream_arn": "${test-java-lambda:my-table:stream_arn}",
+                    "filter": [
+                        {}
+                    ]
+                },
+                {
+                    "id": "sqs-test",
+                    "<--sqs_arn": "${test-java-lambda:my-sqs:arn}",
+                    "sqs_arn": "arn:aws:sqs:us-west-2:704726041651:xyz",
+                    "batch_size": 10,
+                    "enabled": false,
+                    "filter": {},
+                    "max_batching_window": 5,
+                    "max_concurrency": 2,
+                    "report_batch_item_failures": true
+                }
+            ]
+        },
+        {
+            "resource_type": "aws_iam",
+            "resource_id": "lambda-role",
+            "assume_role_principal": "lambda.amazonaws.com",
+            "policies":[
+                {
+                    "inline_policies":[
+                        {
+                            "name" : "lambda-codeguru-policy",
+                            "path": "policies/lambda-codeguru-policy.json"
+                        }
+                    ]
+                },
+                {
+                    "managed_policy_arns":[
+                        "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+                        "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess",
+                        "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole",
+                        "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+                    ]
+                }
+            ]
+        }
+    ]
+}
+
+```
+
+### Argument Reference
+The following arguments are required:
+
+* runtime - (string,Required) - Supported runtime:
+    * Python 3.7: use `PYTHON_3.7`
+    * Python 3.8: use `PYTHON` or `PYTHON_3.8`
+    * Python 3.11: use `PYTHON3.11` or `PYTHON_3.11`
+    * Python 3.12: use `PYTHON3.12` or `PYTHON_3.12`
+    * Java 11: use `JAVA11` or `JAVA_11`
+    * Java 17: use `JAVA17` or `JAVA_17`
+* role - (Required) Amazon Resource Name (ARN) of the function's execution role. The role provides the function's identity and access to AWS services and resources. Can be an actual ARN of a role already created or a new custom role can be created and attached to the lambda via [Resource Reference](tbd) syntax as shown in [this](#vpc-attached-custom-role) example.
+* timeout - (number,Required) The function execution time (in seconds) after which Lambda terminates the function.
+* code_path_local - (string,Required) - Not required if `s3_bucket_name` is specified. Path for Lambda function code hosted locally.
+* s3_bucket_name - (string,Required) - Required if `code_path_local` is not specified. Will be ignored if `code_path_local` is specified. Path for Lambda function code hosted on an S3 bucket.
+
+The following arguments are optional:
+
+* name_override - (string,Optional) - Assign a custom name to the lambda function. Default name wil be {[env](tbd)}-{[resource_prefix](aws_lambda.md#L14)}-{[resource_id](aws_lambda.md#L19)}.
+* architecture - (string,Optional) - Default value is `X86_64`. Specify `ARM_64` to override.
+* disable_insights_version - (bool,Optional) - Default value is `False`. which automatically adds `arn:aws:lambda:{aws_region}:580247275435:layer:LambdaInsightsExtension:38` lambda layer as the version of CloudWatch Lambda insights to use for monitoring.To disable the addition of this lambda layer specify a value of `True`.
+* disable_codeguru - (bool,Optional) - Default value is `False`. which automatically adds `arn:aws:lambda:{aws_region}:157417159150:layer:AWSCodeGuruProfilerJavaAgentLayer:9` lambda layer for code profiling.To disable the addition of this lambda layer specify a value of `True`.
+* parameter_secret_layer - (string,Optional) - Read details on this [here](https://aws.amazon.com/blogs/compute/using-the-aws-parameter-and-secrets-lambda-extension-to-cache-parameters-and-secrets/) Example value:`"arn:aws:lambda:us-west-2:345057560386:layer:AWS-Parameters-and-Secrets-Lambda-Extension:11"`.
+* env_vars - (dict,Optional) - Key/Value pairs - specified as a json object - to be passed as environment variables to Lambda Function. 
+* ephemeral_storage_size - (number,Optional) - The size of the function’s /tmp directory in MiB. Default: 512 MiB
+* log_group_name - (string,Optional) - The log group the function sends logs to. By default, Lambda functions send logs to an automatically created default log group named /aws/lambda/<function name>. If specified, the value is either name of an existing log group or a custom log group can be created using the [Resource Reference](tbd) syntax.
+* vpc_subnets - (dict,Optional) - Only Required if the Lambda function needs to be created within a VPC.
+* security_group_id - (string,Optional) - Only Required if the Lambda function needs to be created within a VPC and `vpc_subnets` is specified. The attribute value can either be ID for an existing security group or can be created using the [Resource Reference](tbd) syntax.
+* tags - (dict,Optional) - Key/Value pairs - specified as a json object - to add tags to the Lambda Function.
+* asyn_duration_seconds - (number,Optional) - Configures `max_event_age` for asynchronous invocation of function. Specify Value in seconds. Minimum: 60 seconds, Maximum: 6 hours.
+* subscriptions - (list,Optional) - list of [subscription](#subscription) json objects as shown in this [example](#subscriptionstriggers)
+
+    #### Subscription
+    
+    The following aws_resources can be configured as Event-Source to the Lambda function
+
+    * SQS - Argument reference
+        * sqs_arn - (string,Required) - Arn of sqs queue.
+        * max_batching_window - (number,Optional) - The maximum amount of time to gather records before invoking the function. Valid Range: Minimum value of 0 minutes. Maximum value of 5 minutes. Default: - no batching window. The lambda function will be invoked immediately with the records that are available.
+        * batch_size - (number,Optional) - The largest number of records that AWS Lambda will retrieve from your event source at the time of invoking your function. Your function receives an event with all the retrieved records. Valid Range: Minimum value of 1. Maximum value of 10. If maxBatchingWindow is configured, this value can go up to 10,000. Default: 10
+        * enabled - (bool,Optional) -  If the SQS event source mapping should be enabled. Default: true 
+        * filters - (dict,Optional) - Add filter criteria option. Default: - None
+        * max_concurrency - (number,Optional) - The maximum concurrency setting limits the number of concurrent instances of the function that an Amazon SQS event source can invoke. Default: - No specific limit.
+        * report_batch_item_failures - (bool,Optional) - Allow functions to return partially successful responses for a batch of records. Default: false
+
+    * SNS - Argument reference
+        * sns_resource_arn - (string, Required) - Arn of Topic.
+
+    * DynamoDB stream - Argument reference
+        * dynamodb_resource_arn - (string,Required) - Arn of DynamoDB table. 
+        * dynamodb_table_stream_arn - (string,Required) -  Arn of DynamoDB table stream. 
+        * batch_size - (number, optional) - The largest number of records that AWS Lambda will retrieve from your event source at the time of invoking your function. Your function receives an event with all the retrieved records. Valid Range: - Minimum value of 1 - Maximum value of 1000
+        * enabled - (bool,Optional) -  If the SQS event source mapping should be enabled. Default: true 
+        * filters - (list[dict],Optional) - Add filter criteria option. Default: - None
+        * max_batching_window - (number,Optional) - The maximum amount of time to gather records before invoking the function. Maximum of 300 seconds. Default 0 seconds.
+        * tumbling_window - (number,Optional) - The size of the tumbling windows to group records sent to DynamoDB. Range: 0 - 900 seconds. Default: - None
+        * parallelization_factor - (number,Optional) - The number of batches to process from each shard concurrently. Valid Range: - Minimum value of 1 - Maximum value of 10 Default: 1
+        * report_batch_item_failures - (bool,Optional) - Allow functions to return partially successful responses for a batch of records. Default: false 
+        * max_record_age - (number,Optional) - The maximum age(in seconds) of a record that Lambda sends to a function for processing. Valid Range: - Minimum value of 60 seconds - Maximum value of 7 days(604800) The default value is -1, which sets the maximum age to infinite. When the value is set to infinite, Lambda never discards old records. Record are valid until it expires in the event source. Default: -1
+        * bisect_batch_on_error - (bool,Optional) - If the function returns an error, split the batch in two and retry. Default: false
+
+### Attribute Reference
+This resource exports the following attributes:
+
+* aws_resource - The Lambda Function CDK/Python Object to associate with any resource looking for Lambda Function object.
+* function_arn - Amazon Resource Name (ARN) identifying your Lambda Function.
+
+
+
+
+
+
+
+
+from constructs import Construct
+from typing import Any
+from aws_resources.aws_s3 import MyS3 as _s3
+from aws_resources.aws_iam import MyIAM as _myiam
+from aws_resources.aws_ec2 import MyEC2 as _myec2
+from aws_resources.aws_logs import MyLogs as _mylog 
+import aws_cdk.aws_lambda_event_sources as _eventsources
+from aws_cdk import aws_sqs as _sqs
+from aws_resources.aws_sns import MySns as _mysns
+from aws_resources.aws_dynamodb import MyDynamoDB as _mydynamodb
+#from aws_resources.aws_sqs import MySqs as _mysqs
+from aws_cdk import Tags
+from aws_cdk import aws_lambda as _lambda
+from aws_cdk import aws_iam as _iam
+from aws_cdk import Resource as cdkResource
+from aws_cdk import Duration,Size
+import utils
+from typing import Any,Sequence
+import os,json
+
+class MyLambdaFunction():
+    def __init__(self,scope: Construct,construct_id: str,config: dict,**kwargs) ->None:
+        super().__init__(**kwargs)
+        # ToDo: shoud we prefix with stack_name?
+        self.scope: Construct = scope
+        self.construct_id: str = f'{construct_id}'
+        self.config:dict = config
+        self.created:bool = False
+        self.aws_resource: cdkResource = None
+        self.env: str = utils.get_environment()
+        self.region: str = utils.get_aws_region(scope)
+        self.vpc_resource = scope.vpc_resource
+
+    def Create(self) -> cdkResource:
+        if self.created:
+            return self
+        
+        runtime_str = self.config["runtime"]
+        
+        runtime:_lambda.Runtime = None
+        if runtime_str.upper() == "PYTHON_3.7":
+            runtime = _lambda.Runtime.PYTHON_3_7
+        elif runtime_str.upper() == "PYTHON" or runtime_str.upper() == "PYTHON_3.8":
+            runtime = _lambda.Runtime.PYTHON_3_8
+        elif runtime_str.upper() == "PYTHON3.11" or runtime_str.upper() == "PYTHON_3.11":
+            runtime = _lambda.Runtime.PYTHON_3_11
+        elif runtime_str.upper() == "PYTHON3.12" or runtime_str.upper() == "PYTHON_3.12":
+            runtime = _lambda.Runtime.PYTHON_3_12
+        elif runtime_str.upper() == "PYTHON3.13" or runtime_str.upper() == "PYTHON_3.13":
+            runtime = _lambda.Runtime.PYTHON_3_13
+        elif runtime_str.upper() == "JAVA17" or runtime_str.upper() == "JAVA_17":
+            runtime = _lambda.Runtime.JAVA_17
+        elif runtime_str.upper() == "JAVA11" or runtime_str.upper() == "JAVA_11":
+            runtime = _lambda.Runtime.JAVA_11
+        elif runtime_str.upper() == "JAVA21" or runtime_str.upper() == "JAVA_21":
+            runtime = _lambda.Runtime.JAVA_21
+        elif runtime_str.upper() == "DOTNET6" or runtime_str.upper() == "DOTNET_6":
+            runtime = _lambda.Runtime.DOTNET_6
+        elif runtime_str.upper() == "DOTNET8" or runtime_str.upper() == "DOTNET_8":
+            runtime = _lambda.Runtime.DOTNET_8
+
+
+        print("runtime",runtime)
+        # added support of arch attribute
+        if self.config.get("architecture",False):    
+            arch_str = f'{self.config["architecture"]}'
+            if arch_str.upper() == "ARM_64":
+                architecture = _lambda.Architecture.ARM_64
+            else:
+                architecture = _lambda.Architecture.X86_64
+        else:
+            architecture = _lambda.Architecture.X86_64
+        print("architecture",architecture)
+        # arch attribute code ends
+        
+        insights_version=None
+        if not self.config.get("disable_insights_version",False):
+            layer_arn=f'arn:aws:lambda:{self.region}:580247275435:layer:LambdaInsightsExtension:38'
+            insights_version=_lambda.LambdaInsightsVersion.from_insight_version_arn(layer_arn)
+        
+        env_vars_dict: dict = {}
+        lambda_layers: list[_lambda.ILayerVerion] = []
+        if not self.config.get('disable_codeguru',False):
+            lambda_codeguru = _lambda.LayerVersion.from_layer_version_arn(
+                self.scope,
+                f'{self.construct_id}-{self.config["resource_id"]}-codeguru',
+                f'arn:aws:lambda:{self.region}:157417159150:layer:AWSCodeGuruProfilerJavaAgentLayer:9'
+            )
+            lambda_layers.append(lambda_codeguru)
+            env_vars_dict["JAVA_TOOL_OPTIONS"] = "-javaagent:/opt/codeguru-profiler-java-agent-standalone.jar"
+        
+        if self.config.get("parameter_secret_layer",False):
+            lambda_secret_layer = _lambda.LayerVersion.from_layer_version_arn(
+                self.scope,
+                f'{self.construct_id}-{self.config["resource_id"]}-secret-layer',
+                layer_version_arn=self.config["parameter_secret_layer"]
+            )
+            lambda_layers.append(lambda_secret_layer)
+
+        code: _lambda.Code=  None
+        if self.config.get("code_path_local",False):
+            #asset_path: str = f'{os.environ["CI_PROJECT_DIR"]}/{self.config["code_path_local"]}'
+            asset_path: str = f'{self.scope.stack_path}/{self.config["code_path_local"]}'
+            code = _lambda.Code.from_asset(path=asset_path)
+        elif self.config.get("s3_bucket_name",False):
+            code = _lambda.Code.from_bucket(
+                bucket= _s3.GetS3ObjectForName(
+                    f'{self.construct_id}-{self.config["resource_id"]}-{self.config["s3_bucket_name"]}',
+                    self.scope,
+                    self.config["s3_bucket_name"]
+                ),
+                key= self.config["s3_bucket_key"]
+            )
+        else:
+            raise Exception("Invalid code path for Lambda asset")
+        
+        iam_role = None
+        if self.config.get("role_arn",False):
+            #unique_id = self.config["role_arn"].rpartition('/')[2]
+            iam_role= _myiam.GetRoleForArn(
+                f'{self.construct_id}-{self.config["resource_id"]}-rolearn',
+                self.scope,
+                self.config["role_arn"]
+            )
+
+        # Handle Env vars . Add mandatory key/value and then append
+        # ones specified in config
+        if self.config.get("env_vars",False):
+            for key,value in self.config["env_vars"].items():
+                env_vars_dict[key] = value
+        
+        # Check if its a vpc Lambda
+        vpc = None
+        vpc_subnets = None
+        security_groups = None
+        if self.config.get("vpc_subnets",None) is not None:
+            vpc = self.vpc_resource
+            vpc_subnets = _myec2.GetSubnetSelection(
+                f'{self.construct_id}-{self.config["resource_id"]}',
+                self.scope,
+                self.config["vpc_subnets"]
+            )
+            security_groups= [_myec2.GetSgForID(
+                f'{self.construct_id}-{self.config["resource_id"]}',
+                self.scope,
+                self.config["security_group_id"]
+            )]
+    
+        # Function Name
+        if self.config.get("name_override",False):    
+            function_name = f'{self.config["name_override"]}'
+        else:
+            function_name = f'{self.construct_id}-{self.config["resource_id"]}'
+
+        #Log Group
+        log_group=None
+        if self.config.get("log_group_name",False):
+            log_group = _mylog.GetLogGroupForName(
+                construct_id= f'{self.construct_id}-{self.config["resource_id"]}-lg',
+                scope= self.scope,
+                log_group_name= self.config["log_group_name"]
+            )
+
+        # ephemeral_storage_size
+        ephemeral_storage_size= None
+        if self.config.get("ephemeral_storage_size",False):
+            ephemeral_storage_size = Size.mebibytes(self.config["ephemeral_storage_size"])
+        
+        memory_size=None
+        if self.config.get("memory_size"):
+            memory_size = self.config["memory_size"]
+
+        _lambda_func = _lambda.Function(
+            self.scope, 
+            function_name= function_name,
+            id= f'{self.construct_id}-{self.config["resource_id"]}',
+            vpc=vpc,
+            runtime=runtime,
+            allow_public_subnet= True,
+            architecture=architecture,
+            handler=self.config["handler"],
+            code= code,
+            tracing=_lambda.Tracing.ACTIVE,
+            profiling=self.config.get("profiling",True), # we need to be able to disable it for DOTNET
+            insights_version=insights_version,
+            timeout= Duration.seconds(self.config["timeout"]),
+            vpc_subnets= vpc_subnets,
+            security_groups= security_groups,
+            role= iam_role,
+            layers=lambda_layers,
+            environment=env_vars_dict,
+            memory_size= memory_size,
+            ephemeral_storage_size= ephemeral_storage_size,
+            log_group= log_group 
+        )
+        
+        # Add support for Resource Policy
+        if self.config.get("resource_policy_path",False):
+            policy_file_path: str = self.scope.stack_path
+            policy_file_path = f'{policy_file_path}/{self.config["resource_policy_path"]}' 
+            with open(policy_file_path, 'r') as policy_file:
+                policy_json = json.load(policy_file)
+            for stmt in policy_json["Statement"]:
+                _lambda_func.add_permission(
+                    f'{stmt["Sid"]}',
+                    principal= _iam.ServicePrincipal(stmt["Principal"]["Service"]),
+                    action= stmt["Action"],
+                    source_arn= stmt["Condition"]["ArnLike"]["AWS:SourceArn"],
+                    #source_account= stmt.principals[0].account_principal.account_id
+                ) 
+        
+        # Add support for Async Invoke
+        if self.config.get("asyn_duration_seconds",False):
+            _lambda.EventInvokeConfig(
+                scope=self.scope, 
+                id= f'{self.construct_id}-{self.config["resource_id"]}-async',
+                function=_lambda_func,
+                max_event_age = Duration.seconds(self.config["asyn_duration_seconds"]),
+                retry_attempts=2
+            )
+
+        self.aws_resource = _lambda_func
+        # Add Tags if specified
+        if self.config.get("tags",False):
+            for key,value in self.config["tags"].items():
+                Tags.of(self.aws_resource).add(key,value)
+
+        # Add subscriptions
+        if self.config.get("subscriptions",False):
+            self._add_subscription(self.config["subscriptions"])
+
+        self.created = True
+        return self
+    
+    def _add_subscription(self,sub_config: list[dict]) -> None:
+        #sub_config: list[dict] = subscription_config.get("sns_resource_arn",False)
+        if sub_config: #and len(sub_config) > 0:
+            for subscription in sub_config:
+                _lambda_function: _lambda.Function = self.aws_resource
+                if subscription.get("sns_resource_arn",False):
+                    _lambda_function.add_event_source(
+                        _eventsources.SnsEventSource(
+                            _mysns.GetobjectforArn(
+                                construct_id= f'{subscription["id"]}-sns-subscription',
+                                scope= self.scope,
+                                topic_arn= subscription["sns_resource_arn"]
+                            ) 
+                        )
+                    )
+                elif subscription.get("dynamodb_resource_arn",False):
+                    max_batching_window= None
+                    if subscription.get("max_batching_window",False):
+                        max_batching_window = Duration.seconds(subscription["max_batching_window"])
+                    tumbling_window= None
+                    if subscription.get("tumbling_window",False):
+                        tumbling_window = Duration.seconds(subscription["tumbling_window"])
+                    max_record_age= None
+                    if subscription.get("max_record_age",False):
+                        max_record_age = Duration.seconds(subscription["max_record_age"])
+                    _lambda_function.add_event_source(
+                        _eventsources.DynamoEventSource(
+                            table= _mydynamodb.GetobjectforArn(
+                                construct_id= f'{subscription["id"]}-dynamodb-subscription',
+                                scope= self.scope,
+                                table_arn= subscription["dynamodb_resource_arn"],
+                                stream_arn = subscription.get("dynamodb_table_stream_arn")
+                            ),
+                            starting_position=_lambda.StartingPosition.LATEST,
+                            
+                            batch_size= subscription.get("batch_size"),
+                            enabled= subscription.get("enabled",True),
+                            filters = subscription.get("filters",None),
+                            max_batching_window= max_batching_window,
+                            parallelization_factor= subscription.get("parallelization_factor",None),
+                            report_batch_item_failures= subscription.get("report_batch_item_failures",False),
+                            retry_attempts= subscription.get("retry_attempts",None),
+                            max_record_age= max_record_age,
+                            tumbling_window= tumbling_window,
+                            bisect_batch_on_error= subscription.get("bisect_batch_on_error",None)
+                        )
+                    )
+                elif subscription.get("sqs_arn",False):
+                    max_batching_window= None
+                    if subscription.get("max_batching_window",False):
+                        max_batching_window = Duration.seconds(subscription["max_batching_window"])
+                    
+                    _lambda_function.add_event_source(
+                        _eventsources.SqsEventSource(
+                            queue= MyLambdaFunction.GetSqsForArn(
+                                construct_id= f'{subscription["id"]}-sqs-subscription',
+                                scope= self.scope,
+                                dlq_arn= subscription["sqs_arn"],
+                            ),
+                            batch_size= subscription.get("batch_size"),
+                            enabled= subscription.get("enabled",True),
+                            filters = subscription.get("filters",None),
+                            max_batching_window= max_batching_window,
+                            max_concurrency= subscription.get("max_concurrency",None),
+                            report_batch_item_failures= subscription.get("report_batch_item_failures",False)
+                        )
+                    )
+                else:
+                    raise Exception("Invalid Lambda subscription!! Currently support sns and dynamodb")
+
+    @staticmethod
+    def GetLambdaForArn(construct_id: str, scope: Construct,function_arn: str)->_lambda.Function:
+        #unique_id = role_arn.rpartition('/')[2] # extract string after last '/'
+        return _lambda.Function.from_function_attributes(
+            scope=scope,
+            id=f'{construct_id}',
+            function_arn=function_arn,
+            same_environment=True
+        )
+    
+    @staticmethod
+    def GetSqsForArn(construct_id: str,scope: Construct,dlq_arn:str)-> _sqs.Queue:
+        
+        return _sqs.Queue.from_queue_arn(
+            scope,
+            id=f'{construct_id}',
+            queue_arn=dlq_arn
+        )
+    def GetAttribute(self,attr_name: str,key) -> Any:
+        if attr_name == "aws_resource":
+            return self.aws_resource
+        if attr_name == "arn":
+            return self.aws_resource.function_arn
