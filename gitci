@@ -1,0 +1,159 @@
+variables:
+  # images for stages
+  JAVA_IMG: "fmk.nexus.onefiserv.net/fmk/java/openjdk-17-maven-appsec:FMK-05-02-24"
+  AWSCLI_IMG: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/python/python3.8-awscli-terraform"
+  MKDOCS_IMG: "registry.gitlab.onefiserv.net/mstechpe/iac/core-cdk/mkdocs"
+  #MKDOCS_IMG: "registry.gitlab.onefiserv.net/mstechpe/iac/core-cdk/mkdocs-material:latest"
+  DOCKER_DIND_BASE: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/docker/docker:20.10.16-dind-fiserv-3"
+  CDK_IMG: "fmk.nexus.onefiserv.net/fmk/tools/cdk-node:FMK-25-01-22"
+  
+  # For MKDOCS cluster
+  ECR_NAME: 307946647371.dkr.ecr.us-east-1.amazonaws.com
+  MKDOCS_IMAGE_NAME: dev-mkdocs-repo
+  ECS_CLUSTER_NAME: dev-mkdocs-cluster
+  ECS_SERVICE_NAME: dev-mkdocs-svc
+  ECS_TASK_NAME: dev-mkdocs-svc-td
+  REGION: us-east-1
+
+  # docker variables - required to set for docker env
+  DOCKER_DRIVER: overlay2
+  DOCKER_HOST: tcp://docker:2376/
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_TLS_VERIFY: 0
+  DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+  DOCKER_IMAGE_NAME: core_cdk
+  
+  # Core-CDK
+  CI_REGISTRY_PATH: registry.gitlab.onefiserv.net/mstechpe/iac/core-cdk
+  CI_REGISTRY: registry.gitlab.onefiserv.net
+
+########## MKDOCS #########
+
+stages:
+  - build-mkdocs
+  - build-mkdocs-jar
+  - build-mkdocs-image
+  - deploy-mkdocs-2fargate
+  - validate-core
+  - build-core-image
+
+# build mkdocs
+build-mkdocs:
+  stage: build-mkdocs
+  image: $MKDOCS_IMG
+  script:
+    - cd $CI_PROJECT_DIR/core-docs
+    - echo $PWD
+    - ls $PWD
+    - ls $CI_PROJECT_DIR/core-docs/src/main/resources
+    - mkdocs build -d $CI_PROJECT_DIR/core-docs/src/main/resources/static
+    - ls $CI_PROJECT_DIR/core-docs/src/main/resources/static
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - core-docs/**/*
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/core-docs/src/main/resources/static/*
+
+# build mkdocs jar to be packaged as docker image
+build-mkdocs-jar:
+  stage: build-mkdocs-jar
+  image: $JAVA_IMG
+  script:
+    - ls $CI_PROJECT_DIR/core-docs/src/main/resources/static
+    - echo "Hello, $GITLAB_USER_LOGIN! The CI_PIPELINE_IID is $CI_PIPELINE_IID"
+    - java -version
+    - mvn -version
+    - cd ./core-docs
+    - mvn -X -s settings.xml clean package
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - core-docs/**/*
+  needs:
+    - build-mkdocs
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/core-docs/target/*
+
+# build mkdocs docker image to be deployed on mkdocs cluster
+build-mkdocs-image:
+  stage: build-mkdocs-image
+  image: $DOCKER_DIND_BASE
+  services:
+    - name: $DOCKER_DIND_BASE
+      alias: "docker"
+  script:
+    - . ./utils/aws_credential_from_svc_user.sh
+    - aws sts get-caller-identity
+    - aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_NAME    
+    - docker build --build-arg JRE_IMG="$JAVA_IMG" -t $MKDOCS_IMAGE_NAME:latest . -f core-docs/Dockerfile
+    - docker tag $MKDOCS_IMAGE_NAME:latest $ECR_NAME/$MKDOCS_IMAGE_NAME:latest
+    - docker image push --all-tags $ECR_NAME/$MKDOCS_IMAGE_NAME
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - core-docs/**/*
+  needs:
+    - job: build-mkdocs-jar
+  tags:
+    - docker
+
+# deploy mkdocs image on Fargate cluster
+deploy-mkdocs-2fargate:
+  stage: deploy-mkdocs-2fargate
+  image: $AWSCLI_IMG
+  services:
+    - name: $AWSCLI_IMG
+      alias: "docker"
+  script:
+    - . ./utils/aws_credential_from_svc_user.sh
+    - python3 utils/snapIt.py latest $ECS_CLUSTER_NAME $ECS_SERVICE_NAME $ECS_TASK_NAME $REGION
+    - . ./utils/deployment_trigger_and_stability_check.sh $ECS_CLUSTER_NAME
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - core-docs/**/*
+  needs:
+    - build-mkdocs-image
+  tags:
+    - docker
+
+####### VALIDATE AND BUILD CDK-CORE IMAGE  #######
+validate-core:
+  stage: validate-core
+  image: $CDK_IMG
+  script:
+    - echo $CI_COMMIT_REF_NAME
+    - . ./tests/test_configs.sh
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_MESSAGE !~ /deploy\s*core/'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+build-core-image:
+  stage: build-core-image
+  image: $DOCKER_DIND_BASE
+  # # Set this to set cicd vars for this environment
+  # environment: ${CI_COMMIT_BRANCH}
+  services:
+    - name: $DOCKER_DIND_BASE
+      alias: "docker"
+  script:
+    - CICD_INFO_STR="Build-Number:$CI_PIPELINE_IID   Global-Pipeline-Number:$CI_PIPELINE_ID   Branch-Name:$BRANCH_NAME   Commit-ID:$CI_COMMIT_SHORT_SHA   Pipeline-URL:$CI_PIPELINE_URL"
+    - docker login -u $CI_REGISTRY_USER -p $CI_JOB_TOKEN $CI_REGISTRY
+    - docker build --build-arg CICD_INFO="$CICD_INFO_STR" -t $DOCKER_IMAGE_NAME:latest -t $DOCKER_IMAGE_NAME:$CI_PIPELINE_IID -t $DOCKER_IMAGE_NAME:$CI_COMMIT_BRANCH .
+    - docker tag $DOCKER_IMAGE_NAME:latest $CI_REGISTRY_PATH/$DOCKER_IMAGE_NAME:latest
+    - docker tag $DOCKER_IMAGE_NAME:$CI_COMMIT_BRANCH $CI_REGISTRY_PATH/$DOCKER_IMAGE_NAME:$CI_COMMIT_BRANCH
+    - docker image push --all-tags $CI_REGISTRY_PATH/$DOCKER_IMAGE_NAME
+  rules:
+    - if: '$CI_COMMIT_MESSAGE !~ /deploy\s*core/'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  needs: 
+    - validate-core
+  #when: on_success
+  tags:
+    - docker
