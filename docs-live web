@@ -1,0 +1,442 @@
+ecr---------------------------------------------------------------------------------------------------------------(website)
+
+aws_ecr reference
+Amazon Elastic Container Registry (ECR) is a fully managed Docker container registry that makes it easy for developers to store, manage, and deploy Docker container images. ECR is integrated with Amazon ECS, simplifying the development to production workflow.
+
+ECR Example
+
+{
+  "stack_id": "enhanced-ecr-stack",
+  "resource_prefix": "enhanced-java",
+  "aws_region": "us-west-2",
+  "resources": [
+    {
+      "resource_type": "aws_ecr",
+      "resource_id": "repository1",
+      "repository_name": "enhanced-test-repository",
+      "image_tag_mutability": "IMMUTABLE",
+      "scan_on_push": true,
+      "encryption_configuration": {
+        "encryption_type": "AES256"
+      },
+      "lifecycle_policy": {
+        "rules": [
+          {
+            "rulePriority": 1,
+            "description": "Expire untagged images older than 30 days",
+            "selection": {
+              "tagStatus": "untagged",
+              "countType": "sinceImagePushed",
+              "countUnit": "days",
+              "countNumber": 30
+            },
+            "action": {
+              "type": "expire"
+            }
+          }
+        ]
+      },
+      "tags": {
+        "env": "test",
+        "project": "java"
+      }
+    }
+  ]
+}
+
+
+
+
+
+
+
+
+
+
+
+route----------------------------------------------------------------------------(website)
+
+AWS Route53 reference
+Amazon Route 53 is a DNS service that connects internet traffic to the correct servers for a requested web application.Route53 can be used for domain registration,DNS routing,Health checking,Traffic flow management and DNS failover.
+
+AWS Route53 Example
+{
+        "stack_id": "test-route53",
+        "resource_prefix": "test-url",
+        "aws_region": "us-west-2",
+        "vpc":
+        {
+            "name" : "vpc",
+            "id" : "vpc-0f123457898393"
+        },
+        "resources":[
+            {
+                "resource_type": "aws_route53",
+                "resource_id": "test-rte53",
+                "zone_id": "Z0123456GE844HJE3",
+                "zone_name": "test-nonprod.aws.fisv.cloud",
+                "records":[
+                    {
+                        "record_type": "A",
+                        "record_name": "test-tca-nonprod.aws.fisv.cloud",
+                        "load_balancer_arn": "arn:aws:elasticloadbalancing:us-west-2:12345678858:loadbalancer/app/test-nrt-hw-lb/c7a9a13c489c4572"
+                    }
+                ]
+            }
+        ]
+    }
+
+
+
+lambda---markdown-----------------------------------------------------------------------------------------
+
+
+## Resource: aws_lambda
+Provides a Lambda Function resource. Lambda allows you to trigger execution of code in response to events in AWS, enabling serverless backend solutions. The Lambda Function itself includes source code and runtime configuration.
+
+For information about Lambda and how to use it, see [What is AWS Lambda?](https://docs.aws.amazon.com/lambda/latest/dg/welcome.html)
+
+### Example Usage
+
+#### Basic Example
+Lambda function with code hosted in S3 bucket and predefined lambda role. 
+```json
+{
+    "stack_id": "test-lambda-stack",
+    "resource_prefix": "test-java",
+    "aws_region": "us-west-2",
+    
+    "resources":[
+        {
+            "resource_type": "aws_lambda",
+            "resource_id": "function1",
+            "handler": "AwsLambdaFunctions::alterPayload",
+            "s3_bucket_name": "my-test-lambda-bucket",
+            "s3_bucket_key": "dev/java-test.jar",
+            "memory_size": 256,
+            "runtime": "java17",
+            "timeout": 60,
+            "role_arn": "arn:aws:iam::123456789012:role/mycustomrole",
+            "env_vars": {
+                "key1": "value1"
+            },
+            "tags": {
+                "runtime": "java17",
+                "env": "test"
+            }
+        }
+    ]
+}
+
+```
+#### VPC-Attached with Custom Role 
+VPC attached Lambda function with local code bucket and custom lambda role. 
+```json
+{
+    "stack_id": "test-lambda-stack",
+    "resource_prefix": "test-java",
+    "aws_region": "us-west-2",
+    "vpc":
+    {
+        "name" : "vpc",
+        "id" : "vpc-0fe0ccb4f6f842818"
+    },
+    "resources":[
+        {
+            "resource_type": "aws_lambda",
+            "resource_id": "function1",
+            "handler": "AwsLambdaFunctions::alterPayload",
+            "handler": "AwsLambdaFunctions::alterPayload",
+            "code_path_local": "lambda_assets/java-test.jar",
+            "memory_size": 256,
+            "runtime": "java17",
+            "timeout": 60,
+            "role_arn": "${test-lambda-stack:lambda-role:arn}",
+            "env_vars": {
+                "key1": "value1"
+            },
+            "tags": {
+                "runtime": "java17",
+                "env": "test"
+            }
+        },
+        {
+            "resource_type": "aws_iam",
+            "resource_id": "lambda-role",
+            "assume_role_principal": "lambda.amazonaws.com",
+            "policies":[
+                {
+                    "inline_policies":[
+                        {
+                            "name" : "lambda-codeguru-policy",
+                            "path": "policies/lambda-codeguru-policy.json"
+                        }
+                    ]
+                },
+                {
+                    "managed_policy_arns":[
+                        "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+                        "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess",
+                        "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole",
+                        "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+                    ]
+                }
+            ]
+        }
+    ]
+}
+
+```
+
+#### Event Source (Triggers)
+Associate Event Sources(Triggers) with Lambda function. 
+```json
+{
+    "stack_id": "test-lambda-stack",
+    "resource_prefix": "test-java",
+    "aws_region": "us-west-2",
+    "vpc":
+    {
+        "name" : "vpc",
+        "id" : "vpc-0fe0ccb4f6f842818"
+    },
+    "resources":[
+        {
+            "resource_type": "aws_lambda",
+            "resource_id": "function1",
+            "handler": "AwsLambdaFunctions::alterPayload",
+            "handler": "AwsLambdaFunctions::alterPayload",
+            "code_path_local": "lambda_assets/java-test.jar",
+            "memory_size": 256,
+            "runtime": "java17",
+            "asyn_duration_seconds": 21600,
+            "timeout": 60,
+            "role_arn": "${test-lambda-stack:lambda-role:arn}",
+            "env_vars": {
+                "key1": "value1"
+            },
+            "tags": {
+                "runtime": "java17",
+                "env": "test"
+            },
+            "subscriptions":[
+                {
+                    "id": "sns-1",
+                    "<--sns_resource_arn": "arn:aws:sns:.....",
+                    "sns_resource_arn": "${test-java-lambda:lambda-sns-subscription-test:arn}"
+                },
+                {
+                    "id": "ddb-1",
+                    "<-both resource arn and stream arn are needed if streamiing is enabled on Table": null,
+                    "<--dynamodb_resource_arn": "arn:aws:dynamodb:.....",
+                    "dynamodb_resource_arn": "${test-java-lambda:my-table:arn}",
+                    "dynamodb_table_stream_arn": "${test-java-lambda:my-table:stream_arn}",
+                    "filter": [
+                        {}
+                    ]
+                },
+                {
+                    "id": "sqs-test",
+                    "<--sqs_arn": "${test-java-lambda:my-sqs:arn}",
+                    "sqs_arn": "arn:aws:sqs:us-west-2:704726041651:xyz",
+                    "batch_size": 10,
+                    "enabled": false,
+                    "filter": {},
+                    "max_batching_window": 5,
+                    "max_concurrency": 2,
+                    "report_batch_item_failures": true
+                }
+            ]
+        },
+        {
+            "resource_type": "aws_iam",
+            "resource_id": "lambda-role",
+            "assume_role_principal": "lambda.amazonaws.com",
+            "policies":[
+                {
+                    "inline_policies":[
+                        {
+                            "name" : "lambda-codeguru-policy",
+                            "path": "policies/lambda-codeguru-policy.json"
+                        }
+                    ]
+                },
+                {
+                    "managed_policy_arns":[
+                        "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+                        "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess",
+                        "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole",
+                        "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+                    ]
+                }
+            ]
+        }
+    ]
+}
+
+```
+
+### Argument Reference
+The following arguments are required:
+
+* runtime - (string,Required) - Supported runtime:
+    * Python 3.7: use `PYTHON_3.7`
+    * Python 3.8: use `PYTHON` or `PYTHON_3.8`
+    * Python 3.11: use `PYTHON3.11` or `PYTHON_3.11`
+    * Python 3.12: use `PYTHON3.12` or `PYTHON_3.12`
+    * Java 11: use `JAVA11` or `JAVA_11`
+    * Java 17: use `JAVA17` or `JAVA_17`
+* role - (Required) Amazon Resource Name (ARN) of the function's execution role. The role provides the function's identity and access to AWS services and resources. Can be an actual ARN of a role already created or a new custom role can be created and attached to the lambda via [Resource Reference](tbd) syntax as shown in [this](#vpc-attached-custom-role) example.
+* timeout - (number,Required) The function execution time (in seconds) after which Lambda terminates the function.
+* code_path_local - (string,Required) - Not required if `s3_bucket_name` is specified. Path for Lambda function code hosted locally.
+* s3_bucket_name - (string,Required) - Required if `code_path_local` is not specified. Will be ignored if `code_path_local` is specified. Path for Lambda function code hosted on an S3 bucket.
+
+The following arguments are optional:
+
+* name_override - (string,Optional) - Assign a custom name to the lambda function. Default name wil be {[env](tbd)}-{[resource_prefix](aws_lambda.md#L14)}-{[resource_id](aws_lambda.md#L19)}.
+* architecture - (string,Optional) - Default value is `X86_64`. Specify `ARM_64` to override.
+* disable_insights_version - (bool,Optional) - Default value is `False`. which automatically adds `arn:aws:lambda:{aws_region}:580247275435:layer:LambdaInsightsExtension:38` lambda layer as the version of CloudWatch Lambda insights to use for monitoring.To disable the addition of this lambda layer specify a value of `True`.
+* disable_codeguru - (bool,Optional) - Default value is `False`. which automatically adds `arn:aws:lambda:{aws_region}:157417159150:layer:AWSCodeGuruProfilerJavaAgentLayer:9` lambda layer for code profiling.To disable the addition of this lambda layer specify a value of `True`.
+* parameter_secret_layer - (string,Optional) - Read details on this [here](https://aws.amazon.com/blogs/compute/using-the-aws-parameter-and-secrets-lambda-extension-to-cache-parameters-and-secrets/) Example value:`"arn:aws:lambda:us-west-2:345057560386:layer:AWS-Parameters-and-Secrets-Lambda-Extension:11"`.
+* env_vars - (dict,Optional) - Key/Value pairs - specified as a json object - to be passed as environment variables to Lambda Function. 
+* ephemeral_storage_size - (number,Optional) - The size of the function’s /tmp directory in MiB. Default: 512 MiB
+* log_group_name - (string,Optional) - The log group the function sends logs to. By default, Lambda functions send logs to an automatically created default log group named /aws/lambda/<function name>. If specified, the value is either name of an existing log group or a custom log group can be created using the [Resource Reference](tbd) syntax.
+* vpc_subnets - (dict,Optional) - Only Required if the Lambda function needs to be created within a VPC.
+* security_group_id - (string,Optional) - Only Required if the Lambda function needs to be created within a VPC and `vpc_subnets` is specified. The attribute value can either be ID for an existing security group or can be created using the [Resource Reference](tbd) syntax.
+* tags - (dict,Optional) - Key/Value pairs - specified as a json object - to add tags to the Lambda Function.
+* asyn_duration_seconds - (number,Optional) - Configures `max_event_age` for asynchronous invocation of function. Specify Value in seconds. Minimum: 60 seconds, Maximum: 6 hours.
+* subscriptions - (list,Optional) - list of [subscription](#subscription) json objects as shown in this [example](#subscriptionstriggers)
+
+    #### Subscription
+    
+    The following aws_resources can be configured as Event-Source to the Lambda function
+
+    * SQS - Argument reference
+        * sqs_arn - (string,Required) - Arn of sqs queue.
+        * max_batching_window - (number,Optional) - The maximum amount of time to gather records before invoking the function. Valid Range: Minimum value of 0 minutes. Maximum value of 5 minutes. Default: - no batching window. The lambda function will be invoked immediately with the records that are available.
+        * batch_size - (number,Optional) - The largest number of records that AWS Lambda will retrieve from your event source at the time of invoking your function. Your function receives an event with all the retrieved records. Valid Range: Minimum value of 1. Maximum value of 10. If maxBatchingWindow is configured, this value can go up to 10,000. Default: 10
+        * enabled - (bool,Optional) -  If the SQS event source mapping should be enabled. Default: true 
+        * filters - (dict,Optional) - Add filter criteria option. Default: - None
+        * max_concurrency - (number,Optional) - The maximum concurrency setting limits the number of concurrent instances of the function that an Amazon SQS event source can invoke. Default: - No specific limit.
+        * report_batch_item_failures - (bool,Optional) - Allow functions to return partially successful responses for a batch of records. Default: false
+
+    * SNS - Argument reference
+        * sns_resource_arn - (string, Required) - Arn of Topic.
+
+    * DynamoDB stream - Argument reference
+        * dynamodb_resource_arn - (string,Required) - Arn of DynamoDB table. 
+        * dynamodb_table_stream_arn - (string,Required) -  Arn of DynamoDB table stream. 
+        * batch_size - (number, optional) - The largest number of records that AWS Lambda will retrieve from your event source at the time of invoking your function. Your function receives an event with all the retrieved records. Valid Range: - Minimum value of 1 - Maximum value of 1000
+        * enabled - (bool,Optional) -  If the SQS event source mapping should be enabled. Default: true 
+        * filters - (list[dict],Optional) - Add filter criteria option. Default: - None
+        * max_batching_window - (number,Optional) - The maximum amount of time to gather records before invoking the function. Maximum of 300 seconds. Default 0 seconds.
+        * tumbling_window - (number,Optional) - The size of the tumbling windows to group records sent to DynamoDB. Range: 0 - 900 seconds. Default: - None
+        * parallelization_factor - (number,Optional) - The number of batches to process from each shard concurrently. Valid Range: - Minimum value of 1 - Maximum value of 10 Default: 1
+        * report_batch_item_failures - (bool,Optional) - Allow functions to return partially successful responses for a batch of records. Default: false 
+        * max_record_age - (number,Optional) - The maximum age(in seconds) of a record that Lambda sends to a function for processing. Valid Range: - Minimum value of 60 seconds - Maximum value of 7 days(604800) The default value is -1, which sets the maximum age to infinite. When the value is set to infinite, Lambda never discards old records. Record are valid until it expires in the event source. Default: -1
+        * bisect_batch_on_error - (bool,Optional) - If the function returns an error, split the batch in two and retry. Default: false
+
+### Attribute Reference
+This resource exports the following attributes:
+
+* aws_resource - The Lambda Function CDK/Python Object to associate with any resource looking for Lambda Function object.
+* function_arn - Amazon Resource Name (ARN) identifying your Lambda Function.
+
+
+route ---------------------------------------------------------------------------------(markdown gitlab)
+
+
+## AWS Route53 reference 
+
+
+Amazon Route 53 is a DNS service that connects internet traffic to the correct servers for a requested web application.Route53 can be used for domain registration,DNS routing,Health checking,Traffic flow management and DNS failover.
+
+### AWS Route53 Example
+
+```json
+{
+        "stack_id": "test-route53",
+        "resource_prefix": "test-url",
+        "aws_region": "us-west-2",
+        "vpc":
+        {
+            "name" : "vpc",
+            "id" : "vpc-0f123457898393"
+        },
+        "resources":[
+            {
+                "resource_type": "aws_route53",
+                "resource_id": "test-rte53",
+                "zone_id": "Z0123456GE844HJE3",
+                "zone_name": "test-nonprod.aws.fisv.cloud",
+                "records":[
+                    {
+                        "record_type": "A",
+                        "record_name": "test-tca-nonprod.aws.fisv.cloud",
+                        "load_balancer_arn": "arn:aws:elasticloadbalancing:us-west-2:12345678858:loadbalancer/app/test-nrt-hw-lb/c7a9a13c489c4572"
+                    }
+                ]
+            }
+        ]
+    }
+```
+
+
+exr-------------------------------------------------------------------------------(markdown git)
+
+## aws_ecr reference
+
+Amazon Elastic Container Registry (ECR) is a fully managed Docker container registry that makes it easy for developers to store, manage, and deploy Docker container images. ECR is integrated with Amazon ECS, simplifying the development to production workflow.
+### ECR Example
+```json
+
+{
+  "stack_id": "enhanced-ecr-stack",
+  "resource_prefix": "enhanced-java",
+  "aws_region": "us-west-2",
+  "resources": [
+    {
+      "resource_type": "aws_ecr",
+      "resource_id": "repository1",
+      "repository_name": "enhanced-test-repository",
+      "image_tag_mutability": "IMMUTABLE",
+      "scan_on_push": true,
+      "encryption_configuration": {
+        "encryption_type": "AES256"
+      },
+      "lifecycle_policy": {
+        "rules": [
+          {
+            "rulePriority": 1,
+            "description": "Expire untagged images older than 30 days",
+            "selection": {
+              "tagStatus": "untagged",
+              "countType": "sinceImagePushed",
+              "countUnit": "days",
+              "countNumber": 30
+            },
+            "action": {
+              "type": "expire"
+            }
+          }
+        ]
+      },
+      "tags": {
+        "env": "test",
+        "project": "java"
+      }
+    }
+  ]
+}
+
+```
+
+
+
+
+
+
+
+
+
+
