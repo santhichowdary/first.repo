@@ -1,0 +1,304 @@
+ecr.py
+
+from constructs import Construct
+from typing import Any
+from aws_cdk import Tags
+from aws_cdk import aws_ecr as _ecr
+from aws_cdk import Resource as cdkResource
+
+import boto3
+import utils
+
+class MyECR():
+    def __init__(self,scope: Construct,construct_id: str,config: dict,**kwargs) ->None:
+        super().__init__(**kwargs)
+        
+        self.scope: Construct = scope
+        self.construct_id: str = f'{construct_id}'
+        self.config:dict = config
+        self.created:bool = False
+        self.aws_resource: cdkResource = None
+        self.env: str = utils.get_environment()
+        self.region: str = utils.get_aws_region(scope)
+        self.ecr_imported = False
+        
+    def Create(self) -> cdkResource:
+        if self.created:
+            return self
+        def _is_ecr_repo_present(repo_name:str) -> bool:
+            try:
+                session = boto3.Session()
+                ecr = boto3.client("ecr",region_name=f'{self.region}')
+                response = ecr.describe_repositories(
+                    repositoryNames=[f'{repo_name}']
+                )
+            except Exception as err:
+                print(f'Info: {err}')
+                return False
+            return True
+        
+        if self.config.get("name_override",False):    
+            repo_name = f'{self.config["name_override"]}'
+        else:
+            repo_name = f'{self.construct_id}-{self.config["resource_id"]}'
+            
+        if not _is_ecr_repo_present(repo_name):
+            ecr_repo = _ecr.Repository(
+                self.scope,
+                id= f'{self.construct_id}-{self.config["resource_id"]}',
+                repository_name=repo_name,
+                encryption_key=self.config.get("kms_key"),
+                image_scan_on_push=True
+            )
+        else:
+            ecr_repo = _ecr.Repository.from_repository_attributes(
+                self.scope,
+                id= f'{self.construct_id}-{self.config["resource_id"]}',
+                repository_name= f'{repo_name}',
+                repository_arn="arn:aws:ecr:us-west-2:704726041651:repository/test-repo-with-lifecycle-rules"
+            )
+            self.ecr_imported = True
+        
+        if not self.ecr_imported and self.config.get("enable_lifecycle_rule",True):
+            # Add lifecycle rules
+            lr_config = None
+            if self.config.get("lifecycle_rule",False):
+                lr_config = self.config["lifecycle_rule"]
+
+            # we add lc rules by default
+            ecr_repo.add_lifecycle_rule(
+                rule_priority= 1,
+                description= "Keep last 15 images" if not lr_config else lr_config["description"],
+                max_image_count= 15 if not lr_config else lr_config["image_count"]
+            )
+        # Add Tags if specified
+        if self.config.get("tags",False):
+            for key,value in self.config["tags"].items():
+                Tags.of(ecr_repo).add(key,value)
+
+        self.aws_resource = ecr_repo
+        self.created = True
+
+        return self
+
+    def GetAttribute(self,attr_name: str,key) -> Any:
+        if attr_name == "aws_resource":
+            return self.aws_resource
+
+
+
+route.py
+
+from constructs import Construct
+from typing import Any
+from aws_cdk.aws_ec2 import IVpc as _vpc
+from  aws_resources.aws_elbv2_nlb import MyELBV2NLB as _nlb
+from  aws_resources.aws_elbv2 import MyELBV2 as _alb
+from aws_cdk import aws_route53 as _rte53
+from aws_cdk import aws_route53_targets as _rte53_targets
+from aws_cdk import Resource as cdkResource
+
+import utils,boto3
+from utils import MyDict
+
+class MyRte53():
+    def __init__(self,scope: Construct,construct_id: str,config: dict,**kwargs) ->None:
+        super().__init__(**kwargs)
+        
+         # Common Attributes
+        self.scope: Construct = scope
+        self.construct_id: str = f'{construct_id}'
+        self.config:dict = config
+        self.created:bool = False
+        self.aws_resource: cdkResource = None
+        self.env: str = utils.get_environment()
+        self.region: str = utils.get_aws_region(scope)
+        self.vpc_resource: _vpc = scope.vpc_resource
+
+        self.private_zone: _rte53.PrivateHostedZone = None
+        self.zone_id: str = None
+        self.zone_name: str = None
+
+    def Create(self) -> cdkResource:
+        if self.created:
+            return self
+        
+        # Validation - Either zone_id or zone_name should be present
+        if self.config.get("zone_id",False):
+            # Let this raise an exception
+            self.zone_id = self.config["zone_id"]
+        else:
+            self.zone_name = self.config["zone_name"]
+            
+        # Return existing zone if present or create new one.
+        self.private_zone = self._get_hosted_zone()
+
+        if self.config.get("records",False):
+            self._create_records(self.private_zone)
+        
+        self.created = True
+        return self
+
+    def _create_records(self, zone: _rte53.PrivateHostedZone)->None:
+        def _get_unique_id(rec_name: str)->str:
+            # unique str is zone_name - record_name
+            zone_name = self.config["zone_name"]
+            unique_str = rec_name.replace(f'.{zone_name}','')
+            return unique_str
+        
+        for rec_config in self.config["records"]:
+            type = self._get_record_type(rec_config["record_type"])
+            record = _rte53.RecordSet(
+                self.scope,
+                id= f'{self.config["resource_id"]}-{_get_unique_id(rec_config["record_name"])}',
+                record_name=rec_config["record_name"],
+                record_type= type,
+                delete_existing=False,
+                zone=zone,
+                target= self._get_record_target(type,rec_config),
+                comment=rec_config.get("comment",None)
+            )
+        return None
+    
+    def _get_record_type(self,type_str: str)->_rte53.RecordType:
+        if type_str.upper() == 'A':
+            return _rte53.RecordType.A
+        if type_str.upper() == 'CNAME':
+            return _rte53.RecordType.CNAME
+        #Add more as needed
+
+    def _get_record_target(self, type: _rte53.RecordType,rec_config:MyDict)->_rte53.RecordTarget:
+        if type == _rte53.RecordType.A:
+            if rec_config.get("is_alias",True): # We are only supporting this for now
+                # check if load_balancer or load_balancer_arn is given
+                # we have to be backward compatible so have to add an if/else 
+                if rec_config.get("load_balancer",False):
+                    return _rte53.RecordTarget(
+                        alias_target=_rte53_targets.LoadBalancerTarget(
+                            load_balancer=rec_config["load_balancer"]
+                        )
+                    )
+                elif rec_config.get("load_balancer_arn",False):
+                    return _rte53.RecordTarget(
+                        alias_target=_rte53_targets.LoadBalancerTarget(
+                            load_balancer= _alb.GetALBForArn(
+                                construct_id=f'{rec_config["record_name"]}-alb-lookup',
+                                scope= self.scope,
+                                alb_arn= rec_config["load_balancer_arn"]
+                            )
+                        )
+                    ) 
+                elif rec_config.get("network_load_balancer_arn",False):
+                    return _rte53.RecordTarget(
+                        alias_target=_rte53_targets.LoadBalancerTarget(
+                            load_balancer= _nlb.GetNLBForArn(
+                                construct_id=f'{rec_config["record_name"]}-nlb-lookup',
+                                scope= self.scope,
+                                nlb_arn= rec_config["network_load_balancer_arn"]
+                            )
+                        )
+                    ) 
+            return _rte53.RecordTarget(
+                    values=[rec_config["ip"]]
+                )
+
+    def _get_hosted_zone(self) -> _rte53.PrivateHostedZone:
+        def _is_zone_present()->bool:
+            #ToDo : implement with boto3 . For now we know usually we have a hosted zone
+            return True
+        
+        if self.zone_id is not None and _is_zone_present():
+            return _rte53.HostedZone.from_hosted_zone_attributes(
+                self.scope,
+                id= f'{self.construct_id}-record-{self.config["resource_id"]}',
+                hosted_zone_id=self.zone_id,
+                zone_name= self.config["zone_name"]
+        )
+        return _rte53.PrivateHostedZone(
+            self.scope,
+            id= f'{self.construct_id}-{self.config["resource_id"]}',
+            vpc=self.vpc_resource,
+            zone_name=self.zone_name
+        )
+    
+    def GetAttribute(self,attr_name: str,key) -> Any:
+        if attr_name == "arn":
+            return self.private_zone.hosted_zone_arn
+
+
+
+v2 version
+
+from constructs import Construct
+from typing import Any
+from aws_cdk.aws_ec2 import IVpc as _vpc
+from  aws_resources.aws_elbv2_nlb import MyELBV2NLB as _nlb
+from  aws_resources.aws_elbv2 import MyELBV2 as _alb
+from aws_cdk import aws_route53 as _rte53
+#from aws_cdk import aws_route53_targets as _rte53_targets
+from aws_cdk import Resource as cdkResource
+
+import utils,boto3
+from utils import MyDict
+
+class MyRte53V2():
+    def __init__(self,scope: Construct,construct_id: str,config: dict,**kwargs) ->None:
+        super().__init__(**kwargs)
+        
+         # Common Attributes
+        self.scope: Construct = scope
+        self.construct_id: str = f'{construct_id}'
+        self.config:dict = config
+        self.created:bool = False
+        self.aws_resource: cdkResource = None
+        self.env: str = utils.get_environment()
+        self.region: str = utils.get_aws_region(scope)
+        self.vpc_resource: _vpc = scope.vpc_resource
+
+        self.private_zone: _rte53.PrivateHostedZone = None
+        self.zone_id: str = None
+
+    def Create(self) -> cdkResource:
+        if self.created:
+            return self
+
+        if self.config.get("records",False):
+            self._create_records()
+        
+        self.created = True
+        return self
+
+    def _create_records(self)->None:
+        
+        for rec_config in self.config["records"]:
+            # type = self._get_record_type(rec_config["record_type"])
+            
+            geo_proximity_location= None
+            if rec_config.get("geo_proximity_aws_region",False):
+                geo_proximity_location= _rte53.CfnRecordSet.GeoProximityLocationProperty(
+                    aws_region= rec_config["geo_proximity_aws_region"],
+                    bias= rec_config.get("BIAS")
+                )
+
+            rte53_rs:_rte53.CfnRecordSet= _rte53.CfnRecordSet(
+                self.scope,
+                id= f'{self.config["resource_id"]}-{rec_config["id"]}',
+                set_identifier= rec_config["id"],
+                name= rec_config["record_name"],
+                type= rec_config["record_type"],
+                alias_target= _rte53.CfnRecordSet.AliasTargetProperty(
+                    dns_name= rec_config["load_balancer_dns"],
+                    hosted_zone_id= rec_config["lb_hosted_zone_id"]
+                ),
+                hosted_zone_id= self.config["zone_id"],
+                comment=rec_config.get("comment",None),
+                weight= rec_config.get("weight",None),
+                geo_proximity_location= geo_proximity_location
+            )
+        return None
+
+    def GetAttribute(self,attr_name: str,key) -> Any:
+        if attr_name == "arn":
+            return self.private_zone.hosted_zone_arn
+
+
