@@ -1,0 +1,219 @@
+cloudwatch-md
+
+## aws_Cloudwatch reference
+
+Amazon CloudWatch is a monitoring and observability service from AWS that provides data and actionable insights to monitor applications, respond to system-wide performance changes, optimize resource utilization, and get a unified view of operational health. CloudWatch can be used to collect and track metrics, collect and monitor log files, and set alarms.
+### Cloud Watch Example
+```json
+
+{
+  "stack_id": "test-cloudwatch-stack",
+  "resource_prefix": "test-java",
+  "aws_region": "us-west-2",
+  "resources": [
+    {
+      "resource_type": "aws_cloudwatch_alarm",
+      "resource_id": "alarm1",
+      "alarm_name": "CPUUtilizationAlarm",
+      "metric_name": "CPUUtilization",
+      "namespace": "AWS/EC2",
+      "statistic": "Average",
+      "period": 300,
+      "evaluation_periods": 1,
+      "threshold": 80,
+      "comparison_operator": "GreaterThanOrEqualToThreshold",
+      "dimensions": [
+        {
+          "name": "InstanceId",
+          "value": "i-1234567890abcdef0"
+        }
+      ],
+      "alarm_actions": [
+        "arn:aws:sns:us-west-2:123456789012:my-sns-topic"
+      ],
+      "tags": {
+        "env": "test",
+        "project": "java"
+      }
+    },
+    {
+      "resource_type": "aws_cloudwatch_log_group",
+      "resource_id": "loggroup1",
+      "log_group_name": "/aws/lambda/my-log-group",
+      "retention_in_days": 14,
+      "tags": {
+        "env": "test",
+        "project": "java"
+      }
+    }
+  ]
+}
+```
+
+
+api.gateway.md
+
+## aws_API Gateway reference
+Amazon API Gateway is a fully managed service that makes it easy for developers to create, publish, maintain, monitor, and secure APIs at any scale. It allows users to create RESTful APIs and WebSocket APIs that enable real-time two-way communication applications. API Gateway can be used to create APIs for web applications, mobile backends, and serverless applications.
+### API Gateway Example
+```json
+
+{
+  "stack_id": "test-api-gateway-stack",
+  "resource_prefix": "test-java",
+  "aws_region": "us-west-2",
+  "resources": [
+    {
+      "resource_type": "aws_api_gateway_rest_api",
+      "resource_id": "api1",
+      "name": "my-test-api",
+      "description": "Test API for Java project",
+      "version": "1.0",
+      "endpoint_configuration": {
+        "types": ["REGIONAL"]
+      },
+      "tags": {
+        "env": "test",
+        "project": "java"
+      }
+    },
+    {
+      "resource_type": "aws_api_gateway_resource",
+      "resource_id": "resource1",
+      "parent_id": "root",
+      "path_part": "myresource"
+    },
+    {
+      "resource_type": "aws_api_gateway_method",
+      "resource_id": "method1",
+      "http_method": "GET",
+      "authorization_type": "NONE",
+      "resource_id": "resource1",
+      "api_id": "api1"
+    },
+    {
+      "resource_type": "aws_api_gateway_integration",
+      "resource_id": "integration1",
+      "http_method": "GET",
+      "resource_id": "resource1",
+      "api_id": "api1",
+      "integration_http_method": "POST",
+      "type": "AWS_PROXY",
+      "uri": "arn:aws:apigateway:us-west-2:lambda:path/2015-03-31/functions/arn:aws:lambda:us-west-2:123456789012:function:my-function/invocations"
+    }
+  ]
+}
+
+```
+
+
+elb.md    (application)
+## aws_Elastic Load Balancer reference
+
+Amazon Elastic Load Balancing (ELB) automatically distributes incoming application traffic across multiple targets, such as EC2 instances, containers, and IP addresses, in one or more Availability Zones. ELB helps ensure high availability, fault tolerance, and scalability for your applications.
+### Elastic Load Balancer Example
+```json
+
+{
+  "stack_id": "test-elb-stack",
+  "resource_prefix": "test-java",
+  "aws_region": "us-west-2",
+  "resources": [
+    {
+      "resource_type": "aws_elb",
+      "resource_id": "elb1",
+      "name": "my-test-elb",
+      "listeners": [
+        {
+          "protocol": "HTTP",
+          "load_balancer_port": 80,
+          "instance_protocol": "HTTP",
+          "instance_port": 80
+        }
+      ],
+      "health_check": {
+        "target": "HTTP:80/",
+        "interval": 30,
+        "timeout": 5,
+        "unhealthy_threshold": 2,
+        "healthy_threshold": 2
+      },
+      "availability_zones": ["us-west-2a", "us-west-2b"],
+      "tags": {
+        "env": "test",
+        "project": "java"
+      }
+    }
+  ]
+}
+```
+
+
+nlb.md
+
+## aws_Elastic Load Balancer with NLBreference
+
+Amazon Network Load Balancer (NLB) is designed to handle millions of requests per second while maintaining ultra-low latencies. It operates at the connection level (Layer 4), routing connections to targets such as EC2 instances, microservices, and containers within Amazon VPC. NLB is ideal for load balancing both TCP and UDP traffic and is optimized for sudden and volatile traffic patterns.
+### Elastic Load Balancer with NLB Example
+```json
+
+{
+  "stack_id": "test-nlb-stack",
+  "resource_prefix": "test-java",
+  "aws_region": "us-west-2",
+  "resources": [
+    {
+      "resource_type": "aws_elb",
+      "resource_id": "nlb1",
+      "name": "my-test-nlb",
+      "type": "network",
+      "subnets": ["subnet-12345678", "subnet-87654321"],
+      "scheme": "internet-facing",
+      "listeners": [
+        {
+          "protocol": "TCP",
+          "port": 80,
+          "default_actions": [
+            {
+              "type": "forward",
+              "target_group_arn": "arn:aws:elasticloadbalancing:us-west-2:123456789012:targetgroup/my-target-group/abcdef123456"
+            }
+          ]
+        }
+      ],
+      "health_check": {
+        "protocol": "TCP",
+        "port": "traffic-port",
+        "interval": 30,
+        "timeout": 10,
+        "healthy_threshold": 3,
+        "unhealthy_threshold": 3
+      },
+      "tags": {
+        "env": "test",
+        "project": "java"
+      }
+    },
+    {
+      "resource_type": "aws_elb_target_group",
+      "resource_id": "targetgroup1",
+      "name": "my-target-group",
+      "protocol": "TCP",
+      "port": 80,
+      "vpc_id": "vpc-12345678",
+      "health_check": {
+        "protocol": "TCP",
+        "port": "traffic-port",
+        "interval": 30,
+        "timeout": 10,
+        "healthy_threshold": 3,
+        "unhealthy_threshold": 3
+      },
+      "tags": {
+        "env": "test",
+        "project": "java"
+      }
+    }
+  ]
+}
+```
