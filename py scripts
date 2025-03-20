@@ -302,3 +302,1029 @@ class MyRte53V2():
             return self.private_zone.hosted_zone_arn
 
 
+
+cloudwatch.py
+
+from constructs import Construct
+from typing import Any
+from aws_cdk import Tags,Duration
+from aws_cdk import aws_cloudwatch as _cw
+from aws_cdk import aws_cloudwatch_actions as _cw_actions
+from aws_cdk import aws_logs as _logs
+from aws_resources.aws_logs import MyLogs as _myLogs
+from aws_cdk import Resource as cdkResource
+from aws_resources.aws_sns import MySns as _mySns
+from aws_cdk import aws_elasticloadbalancingv2 as _alb
+from aws_resources.aws_elbv2 import MyELBV2 as _myalb
+# import boto3
+import utils
+
+_cw_units: dict= {
+    "NONE": None,
+    "COUNT": _cw.Unit.COUNT,
+    "COUNT_PER_SECOND": _cw.Unit.COUNT_PER_SECOND,
+    "SECONDS": _cw.Unit.SECONDS,
+    "PERCENT": _cw.Unit.PERCENT,
+    "BYTES": _cw.Unit.BYTES,
+    "COUNT": _cw.Unit.COUNT
+}
+
+_cw_comp_oper: dict= {
+    "LESS_THAN_THRESHOLD": _cw.ComparisonOperator.LESS_THAN_THRESHOLD,
+    "LESS_THAN_OR_EQUAL_TO_THRESHOLD": _cw.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
+    "GREATER_THAN_THRESHOLD": _cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+    "GREATER_THAN_OR_EQUAL_TO_THRESHOLD": _cw.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD
+}
+
+class MyCloudwatchAlarm():
+   
+    def __init__(self,scope: Construct,construct_id: str,config: dict,**kwargs) ->None:
+        super().__init__(**kwargs)
+
+        self.scope: Construct = scope
+        self.construct_id: str = f'{construct_id}'
+        self.config:dict = config
+        self.created:bool = False
+        self.aws_resource: cdkResource = None
+        self.env: str = utils.get_environment()
+        self.region: str = utils.get_aws_region(scope)
+
+    def Create(self) -> cdkResource:
+        if self.created:
+            return self
+            
+        cw_alarm = _cw.Alarm(
+            scope= self.scope,
+            id= f'{self.construct_id}-{self.config["resource_id"]}',
+            metric= self._create_metric(),
+            actions_enabled= self.config.get("action_enabled",True),
+            threshold= self.config["threshold"],
+            evaluation_periods= self.config["evaluation_periods"],
+            comparison_operator= _cw_comp_oper[self.config["comparison_operator"].upper()]
+        )
+
+        self.aws_resource = cw_alarm
+
+         # Add Tags if specified
+        if self.config.get("tags",False):
+            for key,value in self.config["tags"].items():
+                Tags.of(self.aws_resource).add(key,value)
+
+        # Add Alarm action
+        self._add_alarm_actions()
+
+        self.created = True
+        return self
+
+    def _add_alarm_actions(self)-> None:
+        cw_alarm: _cw.Alarm = self.aws_resource
+        actions_config: list = self.config.get("actions",None)
+        if actions_config is not None:
+            for action_config in self.config["actions"]:
+                # Publish to SNS Topic 
+                if action_config.get("topic_arn",False):
+                    cw_alarm.add_alarm_action(
+                        _cw_actions.SnsAction(
+                            topic= _mySns.GetobjectforArn(
+                                scope= self.scope,
+                                construct_id= f'{self.construct_id}-{self.config["resource_id"]}-{action_config["id"]}',
+                                topic_arn= action_config["topic_arn"]
+                            )
+                        )
+                    )
+        return
+        
+    def _create_metric(self)-> _cw.Metric:
+        
+        ############## LOG_METRIC ############
+        if self.config.get("log_metric",False):
+            log_metric_config = self.config["log_metric"]
+            metric= _cw.Metric(
+                metric_name= log_metric_config["metric_name"],
+                namespace= log_metric_config["metric_namespace"],
+                statistic= log_metric_config.get("statistic","n"),
+            )
+            
+            log_metric = _logs.MetricFilter(
+                scope= self.scope,
+                id= f'{self.construct_id}-{self.config["resource_id"]}-log_metric',
+                log_group= _myLogs.GetLogGroupForName(
+                    scope= self.scope,
+                    construct_id= f'{self.construct_id}-{self.config["resource_id"]}-{log_metric_config["metric_name"]}',
+                    log_group_name= log_metric_config["log_group_name"]
+                ),
+                # metric_name= log_metric_config["metric_name"],
+                # metric_namespace= log_metric_config["metric_namespace"],
+                metric_name= metric.metric_name,
+                metric_namespace= metric.namespace,
+                filter_pattern= _logs.FilterPattern.literal(log_metric_config["filter_pattern"]),
+                filter_name= log_metric_config["filter_name"],
+                dimensions= log_metric_config.get("dimensions",None), # needs to be a dict
+                default_value= log_metric_config.get("default_value",None),
+                metric_value= log_metric_config.get("metric_value","1"),
+                unit= _cw_units[log_metric_config.get("unit","None").upper()]
+            )
+        ################# ALB ##################
+        elif self.config.get("alb_metric",False):
+            alb_metric_config = self.config["alb_metric"]
+            my_alb: _alb.ApplicationLoadBalancer = _myalb.GetALBForArn(
+                scope= self.scope,
+                construct_id= f'{self.construct_id}-{self.config["resource_id"]}-alb_metric',
+                alb_arn= alb_metric_config["alb_arn"]
+            )
+            metric = my_alb.metrics.custom(
+                label= alb_metric_config.get("label"),
+                metric_name= alb_metric_config["metric_name"],
+                period= Duration.minutes(alb_metric_config["period_minutes"]),
+                statistic= alb_metric_config.get("statistic")
+            )
+        return metric
+
+    def GetAttribute(self,attr_name: str,key) -> Any:
+        if attr_name == "aws_resource":
+            return self.aws_resource
+        elif attr_name == "log_name":
+            return self.aws_resource.log_group_name
+
+
+
+
+iam.py
+
+from constructs import Construct
+from aws_cdk import Tags
+from aws_cdk import aws_iam as _iam
+from aws_cdk import Resource as cdkResource
+from aws_cdk.aws_ec2 import IVpc as _vpc
+
+from typing import Sequence,Any
+import utils
+from utils import MyDict
+import json
+import os
+
+class MyIAM():
+    def __init__(self,scope: Construct,construct_id: str,config: dict,**kwargs) ->None:
+        super().__init__(**kwargs)
+        
+        # Common Attributes
+        self.scope: Construct = scope
+        self.construct_id: str = f'{construct_id}'
+        self.config:dict = config
+        self.created:bool = False
+        self.aws_resource: cdkResource = None
+        self.env: str = utils.get_environment()
+        self.region: str = utils.get_aws_region(scope)
+        self.vpc_resource: _vpc = scope.vpc_resource
+
+    def Create(self) -> cdkResource:
+        if self.created:
+            return self
+        
+        if self.config.get("name_override",False):    
+            role_name = f'{self.config["name_override"]}'
+        else:
+            role_name = f'{self.construct_id}-{self.config["resource_id"]}'
+
+        assumed_by_principal: _iam.IPrincipal = None
+        assume_role_str = self.config["assume_role_principal"]
+        if 'arn:aws:iam:' in assume_role_str:
+             assumed_by_principal = _iam.ArnPrincipal(self.config["assume_role_principal"])
+        else:
+             assumed_by_principal = _iam.ServicePrincipal(self.config["assume_role_principal"])
+        role= _iam.Role(
+            self.scope, 
+            id= f'{self.construct_id}-{self.config["resource_id"]}',
+            role_name= role_name,
+            path= self.config.get("path"),
+            assumed_by= assumed_by_principal,
+            external_ids= self.config.get("external_ids",None),
+            description= self.config.get("description",None)
+        )
+        self._add_policies(role,self.config["policies"]) # we are making policies mandatory
+        
+        self.aws_resource = role
+
+         # Add Tags if specified
+        if self.config.get("tags",False):
+            for key,value in self.config["tags"].items():
+                Tags.of(self.aws_resource).add(key,value)
+
+        self.created = True
+        return self
+
+    def _add_policies(self,role:_iam.Role, policies_config: MyDict) -> None:
+        
+        for policy_config in policies_config:
+            #policy_file_path: str = os.environ['CI_PROJECT_DIR']
+            policy_file_path: str = self.scope.stack_path
+            if policy_config.get("managed_policy_arns",False):
+                for mp_arn in policy_config["managed_policy_arns"]:
+                    unique_id = mp_arn.rpartition('/')[2]
+                    mp_obj=_iam.ManagedPolicy.from_managed_policy_arn(
+                            scope=self.scope,
+                            id=f'{self.config["resource_id"]}-{unique_id}',
+                            managed_policy_arn=mp_arn
+                        )
+                    role.add_managed_policy(mp_obj)
+
+            if policy_config.get("inline_policies",False) and len(policy_config.get("inline_policies")) > 0:
+                statements: Sequence[_iam.PolicyStatement] = []
+                for ip_config in policy_config["inline_policies"]:
+                    #policy_file_path: str = os.environ['CI_PROJECT_DIR']
+                    policy_file_path: str = self.scope.stack_path
+                    policy_file_path = f'{policy_file_path}/{ip_config["path"]}' 
+                    role.attach_inline_policy(
+                        policy=_iam.Policy(
+                            id= f'{ip_config["name"]}',
+                            scope= self.scope,
+                            policy_name= f'{ip_config["name"]}',
+                            document=self.GetPolicyDocumentForPolicyFile(
+                                policy_file_path= policy_file_path
+                            )
+                        )   
+                    )
+    
+    @staticmethod
+    def GetPolicyDocumentForPolicyFile(policy_file_path: str)->_iam.PolicyDocument:
+        statements: Sequence[_iam.PolicyStatement] = []
+        with open(policy_file_path, 'r') as policy_file:
+                        policy_json = json.load(policy_file)
+        for statement in policy_json["Statement"]:
+            statements.append(_iam.PolicyStatement.from_json(statement))
+                
+        return _iam.PolicyDocument(
+            statements= statements
+        ) 
+
+    @staticmethod
+    def GetPolicyStatementsForPolicyFile(policy_file_path: str)-> Sequence[_iam.PolicyStatement]:
+        statements: Sequence[_iam.PolicyStatement] = []
+        with open(policy_file_path, 'r') as policy_file:
+                        policy_json = json.load(policy_file)
+        for statement in policy_json["Statement"]:
+            statements.append(_iam.PolicyStatement.from_json(statement))
+                
+        return statements
+
+    @staticmethod
+    def GetRoleForArn(construct_id: str, scope: Construct,role_arn: str)->_iam.IRole:
+        #unique_id = role_arn.rpartition('/')[2] # extract string after last '/'
+        return _iam.Role.from_role_arn(
+            scope=scope,
+            id=f'{construct_id}-{utils.get_random_number(5)}',
+            role_arn=role_arn
+        )
+
+    def GetAttribute(self,attr_name: str,key) -> Any:
+        if attr_name == "arn":
+            return self.aws_resource.role_arn
+
+
+api.gateway.py
+
+from constructs import Construct
+from typing import Union,Any
+
+from aws_cdk import aws_apigateway as apig
+from aws_cdk import Resource as cdkResource
+
+from aws_resources.apig_lambda_integration import(
+    ApiGatewayLambdaIntegrations,
+    ApiGatewayIntegrations,
+    ApiGatewayHTTPIntegrations,
+)
+from aws_resources.aws_iam import (
+    MyIAM as _myiam,
+)
+import utils,re
+
+class MyApiGateway():
+    def __init__(self,scope: Construct,construct_id: str,config: dict,**kwargs) ->None:
+        super().__init__(**kwargs)
+        
+        # Common attributes
+        self.scope: Construct = scope
+        self.construct_id: str = f'{construct_id}'
+        self.config:dict = config
+        self.created:bool = False
+        self.aws_resource: cdkResource = None
+        self.env: str = utils.get_environment()
+        self.region: str = utils.get_aws_region(scope)
+        
+        # Resource specific attributes
+        self.default_integration: Union[apig.Integration,None]
+        self.apig_name: str = config["resource_id"]
+        self.api_resource_map: dict[str,apig.Resource] = {} # id->resource
+        self.methods: dict[str,dict[str,str]] = {} # method_id->{method_type,resource_name)
+        self.stage: dict[str,apig.Stage] = {} # stage-name -> Stage
+        self.api_key: dict[str,apig.ApiKey] = {} # api-key-name -> ApiKey
+
+
+    def Create(self) -> cdkResource:
+        if self.created:
+            return self
+        
+        if self.config.get("name_override",False):    
+            apig_name = f'{self.config["name_override"]}'
+        else:
+            apig_name = f'{self.construct_id}-{self.config["resource_id"]}'
+        
+        policy_document= None
+        if self.config.get("policy_file_path",False):
+            #policy_file_path: str = os.environ['CI_PROJECT_DIR']
+            policy_file_path: str = self.scope.stack_path
+            policy_file_path = f'{policy_file_path}/{self.config["policy_file_path"]}'
+            policy_document= _myiam.GetPolicyDocumentForPolicyFile(policy_file_path)
+
+        self.aws_resource = apig.RestApi(
+            self.scope,
+            f'{self.construct_id}-{self.config["resource_id"]}',
+            rest_api_name= apig_name,
+            endpoint_configuration=apig.EndpointConfiguration(
+                types=[apig.EndpointType.PRIVATE]
+            ),
+            policy=policy_document,
+            description= f'ApiGateway Created by CDK - {self.config.get("description","No Custom Description")}',
+        )
+        self.root_resource = self.aws_resource.root
+
+        # Parse and save all methods so we can use the info for Integrations
+        api_resources = self.config.get("api_resources",None)
+
+        if api_resources is not None:
+            self._parse_all_methods(self.config["api_resources"])
+        
+        # now we can set this to true - we have RestAPI and all method info
+        # even though we parse and create Resource objects later
+        self.created = True
+
+        # check for Deployment - to be retired - use _set_stages
+        if self.config.get("deployment",None) is not None:
+            self._set_deployment(self.config["deployment"])
+
+        if self.config.get("stages",None) is not None:
+            self._set_stages(self.config["stages"])
+        
+        # Check for default integration
+        integ = self.config.get("integration",None)
+        if integ is None:
+            self.default_integration = None
+        else:
+            self.default_integration = self._get_integration(self.config["integration"])
+
+        # Now parse the Api Resources   
+        api_resources = self.config.get("api_resources",None)
+        if api_resources is not None:
+            self._set_api_resources(self.config["api_resources"])
+        
+        # Create API Keys
+        if self.config.get("api_keys", None) is not None:
+            self._set_api_keys(self.config["api_keys"])
+        
+        if self.config.get("usage_plans", None) is not None:
+            self._set_usage_plan(self.config["usage_plans"])
+
+        
+
+        return self
+
+    ### Will be sunset...use _set_stages
+    def _set_deployment(self,deployment:dict) -> None:
+        stage_name=deployment["stage_name"]
+        deployment = apig.Deployment(
+            self.scope,
+            f'{self.construct_id}-{self.apig_name}-Deployment-{stage_name}', 
+            api=self.aws_resource,
+            stage_name=stage_name
+        )
+        
+        apig.Stage(
+            self.scope,
+            f'{self.apig_name}-Stage-{stage_name}',
+            stage_name=stage_name,
+            deployment=deployment,
+            variables=self.config["deployment"]["variables"]
+        )
+
+    def _set_stages(self,stages:list) -> None:
+        for stage in stages:
+            stage_name=stage["stage_name"]
+            deployment = apig.Deployment(
+                self.scope,
+                f'{self.construct_id}-{self.apig_name}-Deployment-{stage_name}', 
+                api=self.aws_resource
+            )
+            self.stage[stage_name]= apig.Stage(
+                self.scope,
+                f'{self.construct_id}-{self.apig_name}-Stage-{stage_name}',
+                stage_name=stage_name,
+                deployment=deployment,
+                variables=stage["variables"]
+            )
+    
+    def _parse_all_methods(self,api_resources: list[dict])->None:
+        for api_resource in api_resources:
+            if api_resource.get("methods", None) is not None:
+                for method in api_resource["methods"]:
+                    method_id = method["id"]
+                    method_type = method["type"]
+                    resource_path = api_resource["path"]
+                    self.methods[method_id] = {method_type: resource_path}
+    
+    def _set_api_resources(self,api_resources: list[dict])->None:
+        for api_resource in api_resources:
+            self._set_api_resource(api_resource)
+
+
+    def _set_api_resource(self,api_res_config:dict)->None:
+        # integ = api_res_config.get("integration",None)
+        # if integ is None:
+        #     self.default_integration = None
+        # else:
+        #     self.default_integration = self._get_integration(api_res_config["integration"])
+        #self.default_integration=self._get_integration(api_resource["integration"]) if api_resource.get("integration",False) else None,
+        path_part:str =api_res_config["path"]
+        parent: apig.Resource = api_res_config.get("parent_id",None)
+        if parent is None:
+            parent = self.root_resource
+        else:
+            parent = self.api_resource_map[api_res_config["parent_id"]]
+        if path_part == '/': #root
+            resource_id = self.root_resource
+            self.api_resource_map[api_res_config["id"]] = self.root_resource
+        else:
+            resource_id = apig.Resource(
+                self.scope,
+                id=f'{self.construct_id}-{api_res_config["id"]}',
+                parent=parent,
+                path_part=api_res_config["path"],
+                default_integration=self.default_integration
+            )
+        self.api_resource_map[api_res_config["id"]] = resource_id
+
+        if api_res_config.get("methods",None) is not None:
+            self._set_methods(resource_id,api_res_config["methods"])
+
+    def _get_integration(self,integration: Union[dict, None])->apig.Integration:
+        
+        if integration is not None:
+            apig_integration: ApiGatewayIntegrations
+            type: str = integration["type"] 
+            if type.upper() == "AWS_LAMBDA":
+                return ApiGatewayLambdaIntegrations(self.scope).get_integration(integration["integration_options"])
+            if type.upper() == "HTTP_PROXY":
+                return ApiGatewayHTTPIntegrations(self.scope).get_integration(integration["integration_options"])
+            
+        # if the method doesn't have integration defined that means we try to use
+        # the default integration.
+        elif self.default_integration is not None:
+            return self.default_integration
+        else:
+            # Todo: Maybe raise an exception here?
+            return None
+        
+    def _set_methods(self,resource_id:apig.Resource,resource_methods:list[dict])-> None:
+        for res_method in resource_methods:
+            self._set_method(resource_id,res_method)
+    
+    def _set_method(self,resource_id: apig.Resource,resource_method:dict)-> None:
+        integration = resource_method.get("integration",None)
+        resource_id.add_method(
+            resource_method["type"],
+            integration=self._get_integration(resource_method["integration"] if integration != None else None),
+            api_key_required= resource_method.get("api_key_required",True)
+        )
+    
+    def _set_api_keys(self,api_keys: list[dict])->None:
+        for api_key in api_keys:
+            self.api_key[api_key["name"]] = apig.ApiKey(
+                self.scope,
+                f'{self.construct_id}-{api_key["name"]}-ApiKey',
+                api_key_name=api_key["name"],
+                description=api_key["description"],
+                enabled=api_key.get("enabled",True)
+            )
+
+    def _set_usage_plan(self,usage_plans: list[dict])->None:
+        for usage_plan in usage_plans:
+            api_stages = []
+            for stage in usage_plan["stages"]:
+                api_stages.append(
+                    apig.UsagePlanPerApiStage(
+                        api=self.aws_resource,
+                        stage=self.stage[stage]
+                    )
+                )
+            plan = apig.UsagePlan(
+                self.scope,
+                f'{self.construct_id}-{usage_plan["name"]}-UsagePlan',
+                name=usage_plan["name"],
+                api_stages=api_stages,
+                throttle=apig.ThrottleSettings(
+                    burst_limit=usage_plan["throttle"]["burst_limit"],
+                    rate_limit=usage_plan["throttle"]["rate_limit"]
+                ),
+                quota=apig.QuotaSettings(
+                    limit=usage_plan["quota"]["limit"],
+                    period=apig.Period[usage_plan["quota"]["period"]]
+                )
+            )
+            for key in usage_plan["api_keys"]:
+                plan.add_api_key(self.api_key[key])
+    
+    def GetAttribute(self,attr_name: str,key) -> Any:
+        if attr_name == "aws_resource":
+            return self.aws_resource
+        if attr_name == "arn":
+            return self.aws_resource.function_arn
+       
+        if attr_name == "method_arn":
+            # let it fail if key is not found
+            method_id= key
+            method_dict: dict = self.methods[method_id]
+            method_type = next(iter(method_dict.keys()))
+            method_name = method_dict[method_type]
+            api_arn= self.aws_resource.arn_for_execute_api (
+                #method=key
+            )
+            return re.sub(r'/\*/\*$', f'/{method_type}/{method_name}', api_arn)
+        
+
+
+
+
+elb.py(nlbbbbbbbbbbbbb)
+
+from constructs import Construct
+from aws_cdk import Tags
+from aws_cdk import aws_elasticloadbalancingv2 as _nlb
+from aws_cdk import aws_elasticloadbalancingv2_targets as _nlb_targets
+from aws_cdk import Resource as cdkResource
+from aws_resources.aws_ec2 import MyEC2 as _myec2
+from aws_resources.aws_s3 import MyS3 as _mys3
+from aws_resources.aws_lambda import MyLambdaFunction as _lambda
+import utils
+from utils import MyDict
+
+from typing import Any,Sequence
+
+class MyELBV2NLB():
+    def __init__(self,scope: Construct,construct_id: str,config: dict,**kwargs) ->None:
+        super().__init__(**kwargs)
+
+        self.scope: Construct = scope
+        self.construct_id: str = f'{construct_id}'
+        self.config:dict = config
+        self.created:bool = False
+        self.aws_resource: cdkResource = None
+        self.env: str = utils.get_environment()
+        self.region: str = utils.get_aws_region(scope)
+        self.vpc_resource = scope.vpc_resource
+        
+    def Create(self) -> cdkResource:
+        if self.created:
+            return self
+        
+        if self.config.get("name_override",False):    
+            nlb_name = f'{self.config["name_override"]}'
+        else:
+            nlb_name = f'{self.construct_id}-{self.config["resource_id"]}'
+
+        def _get_nlb(arn) -> _nlb.NetworkLoadBalancer:
+            unique_id = arn.rpartition('/')[2]
+            return _nlb.NetworkLoadBalancer.from_lookup(
+                self.scope, 
+                f'{self.construct_id}-{unique_id}', 
+                load_balancer_arn=arn,
+
+            )
+        
+        existing_nlb_arn = self.config.get("existing_nlb_arn",None)
+        if existing_nlb_arn is not None:
+            nlb = _get_nlb(self.config["existing_nlb_arn"])
+        else:
+            #raise Exception("Creation of New NLB not supported!!")
+            # ******* TO DO ****
+            
+            nlb = _nlb.NetworkLoadBalancer(
+                self.scope,
+                id= f'{self.construct_id}-{self.config["resource_id"]}',
+                vpc= self.vpc_resource,
+                internet_facing= self.config.get("internet_facing",None),
+                cross_zone_enabled= self.config.get("cross_zone_enabled",True),
+                vpc_subnets= _myec2.GetSubnetSelection(
+                    f'{self.construct_id}-{self.config["resource_id"]}',
+                    self.scope,
+                    self.config["vpc_subnets"],
+                ),
+                deletion_protection= self.config.get("deletion_protection",None),
+                load_balancer_name= nlb_name,
+                security_groups= [_myec2.GetSgForID(
+                    f'{self.construct_id}-{self.config["resource_id"]}',
+                    self.scope,
+                    self.config["security_group_id"]
+                )]
+            )
+
+            if self.config.get("log_bucket",False):
+                nlb.log_access_logs(self.config["log_bucket"])
+            elif self.config.get("log_bucket_name",False):
+                nlb.log_access_logs(
+                    bucket=_mys3.GetS3ObjectForName(
+                        f'{self.construct_id}-{self.config["resource_id"]}',
+                        self.scope,
+                        self.config["log_bucket_name"]
+                    )
+                )
+    
+        if self.config.get("listeners",False):
+                self._attach_listeners(nlb,self.config["listeners"])
+                
+        self.aws_resource = nlb
+
+         # Add Tags if specified
+        if self.config.get("tags",False):
+            for key,value in self.config["tags"].items():
+                Tags.of(self.aws_resource).add(key,value)
+
+        self.created = True
+        return self
+
+    def _attach_listeners(self,nlb: _nlb.NetworkLoadBalancer,listeners_config: MyDict) -> None:
+        
+        for lnr_config in listeners_config:
+            protocol_str:str = lnr_config.get("protocol","TCP")
+            if protocol_str.upper() == "TCP":
+                protocol = _nlb.Protocol.TCP
+            elif protocol_str.upper() == "TLS":
+                protocol = _nlb.Protocol.TLS
+            listener = nlb.add_listener(
+                f'{self.construct_id}-{lnr_config["id"]}-lnr',
+                port= lnr_config["port"],
+                protocol= protocol,
+                certificates = [_nlb.ListenerCertificate.from_arn(lnr_config["https_certificate"])] if protocol == _nlb.Protocol.TLS else None,
+                default_action= _nlb.NetworkListenerAction.forward(self._get_target_groups(lnr_config["target_groups"])),
+                #default_target_groups= self._get_target_groups(lnr_config["target_groups"])
+            )
+        return None
+
+    def _get_target_groups(self,target_groups_config: MyDict)-> Sequence[_nlb.NetworkTargetGroup]:
+        target_groups: Sequence[_nlb.NetworkTargetGroup] = []
+       
+        target_type: _nlb.TargetType = None
+      
+        for tg_config in target_groups_config:
+            target_type = tg_config["target_type"]
+           
+            if target_type.upper() == "IP":
+                target_type = _nlb.TargetType.IP
+            elif target_type.upper() == "INSTANCE":
+                target_type = _nlb.TargetType.INSTANCE
+            else:
+                raise Exception("Invalid target_type or not supported!!")
+            
+            # Protocol
+            protocol_str:str = tg_config.get("protocol","TCP")
+            if protocol_str.upper() == "TCP":
+                protocol = _nlb.Protocol.TCP
+            elif protocol_str.upper() == "TLS":
+                protocol = _nlb.Protocol.TLS
+
+            if tg_config.get("name_override",False):    
+                tg_name = tg_config["name_override"]
+            else:
+                tg_name = f'{self.construct_id}-{tg_config["id"]}'
+            
+            tg= _nlb.NetworkTargetGroup(
+                self.scope,
+                id=tg_name,
+                port=tg_config["port"],
+                target_group_name= tg_name,
+                health_check = _nlb.HealthCheck(port=tg_config["health_check_port"]),
+                protocol= protocol,
+                target_type= target_type,
+                targets= self._get_targets(tg_config),
+                vpc=self.vpc_resource
+            )
+                 
+            target_groups.append(tg)
+            
+        return target_groups
+
+    def _get_targets(self, tg_config:dict)->Sequence[_nlb.INetworkLoadBalancerTarget]:
+        targets:Sequence[_nlb.INetworkLoadBalancerTarget] = []
+        if tg_config["target_type"].upper() == "IP":
+            for ip in tg_config["targets"]:
+                ip_target= _nlb_targets.IpTarget(
+                    ip_address=ip,
+                    port=tg_config.get("port",None)
+                )
+                targets.append(ip_target)
+         # INSTANCE
+        elif tg_config["target_type"].upper() == "INSTANCE":
+            for instance in tg_config["targets"]:
+                instance_target= _nlb_targets.InstanceIdTarget(
+                    instance_id=instance,
+                    port=tg_config.get("port",None)
+                )
+                targets.append(instance_target)
+        
+        return targets
+
+
+    @staticmethod
+    def GetNLBForArn(construct_id: str,scope: Construct,nlb_arn:str)->_nlb.NetworkLoadBalancer:
+
+        return _nlb.NetworkLoadBalancer.from_lookup(
+            scope= scope,
+            id= construct_id,
+            load_balancer_arn= nlb_arn,
+        )
+    
+    def GetAttribute(self,attr_name: str,key) -> Any:
+        if attr_name == "dns":
+            return self.aws_resource.load_balancer_dns_name
+        if attr_name == "aws_resource":
+            return self.aws_resource
+        if attr_name == "arn":
+            return self.aws_resource.load_balancer_arn
+
+
+elb(albbbbbbbbbbbbbbb)
+
+
+from constructs import Construct
+from aws_cdk import Tags,Duration
+from aws_cdk import aws_elasticloadbalancingv2 as _alb
+from aws_cdk import Resource as cdkResource
+from aws_resources.aws_ec2 import MyEC2 as _myec2
+from aws_resources.aws_lambda import MyLambdaFunction as _lambda
+import aws_cdk.aws_elasticloadbalancingv2_targets as _targets
+from aws_resources.aws_s3 import MyS3 as _mys3
+import utils
+from utils import MyDict
+
+from typing import Any,Sequence
+
+class MyELBV2():
+    def __init__(self,scope: Construct,construct_id: str,config: dict,**kwargs) ->None:
+        super().__init__(**kwargs)
+
+        self.scope: Construct = scope
+        self.construct_id: str = f'{construct_id}'
+        self.config:dict = config
+        self.created:bool = False
+        self.aws_resource: cdkResource = None
+        self.env: str = utils.get_environment()
+        self.region: str = utils.get_aws_region(scope)
+        self.vpc_resource = scope.vpc_resource
+        
+    def Create(self) -> cdkResource:
+        if self.created:
+            return self
+        
+        def _get_alb(arn) -> _alb.ApplicationLoadBalancer:
+            unique_id = arn.rpartition('/')[2]
+            return _alb.ApplicationLoadBalancer.from_lookup(
+                self.scope, 
+                f'{self.construct_id}-{unique_id}', 
+                load_balancer_arn=arn
+            )
+        
+        existing_arn = self.config.get("existing_alb_arn",None) # Optional
+        if existing_arn is not None:
+            alb = _get_alb(self.config["existing_alb_arn"])
+        else:
+            alb = _alb.ApplicationLoadBalancer(
+                self.scope,
+                id= f'{self.construct_id}-{self.config["resource_id"]}',
+                vpc= self.vpc_resource,
+                internet_facing= self.config["internet_facing"],
+                vpc_subnets= _myec2.GetSubnetSelection(
+                    f'{self.construct_id}-{self.config["resource_id"]}',
+                    self.scope,
+                    self.config["vpc_subnets"],
+                ),
+                load_balancer_name= f'{self.construct_id}-{self.config["resource_id"]}',
+                security_group= _myec2.GetSgForID(
+                    f'{self.construct_id}-{self.config["resource_id"]}',
+                    self.scope,
+                    self.config["security_group_id"]
+                )
+            )
+
+            if self.config.get('log_bucket_name',False):
+                alb.log_access_logs(
+                    _mys3.GetS3ObjectForName(
+                        construct_id= f'{self.construct_id}-{self.config["resource_id"]}-s3logbucket',
+                        scope= self.scope,
+                        bucket_name= self.config["log_bucket_name"]
+                    )
+                )
+            elif self.config.get('log_bucket',False):
+                alb.log_access_logs(self.config['log_bucket'])
+
+        if self.config.get("listeners",False):
+                self._attach_listeners(alb,self.config["listeners"])
+                
+        self.aws_resource = alb
+
+         # Add Tags if specified
+        if self.config.get("tags",False):
+            for key,value in self.config["tags"].items():
+                Tags.of(self.aws_resource).add(key,value)
+
+        self.created = True
+        return self
+
+    def _attach_listeners(self,alb: _alb.ApplicationLoadBalancer,listeners_config: MyDict) -> None:
+        count = 0
+        for lnr_config in listeners_config:
+            count = count + 1
+            listener_id = f'{self.construct_id}-lnr-{count}'
+            if lnr_config.get("id",False):
+                listener_id = f'{self.construct_id}-{lnr_config["id"]}'
+            if lnr_config.get("existing_listener_arn",None) is not None:
+                listener= _alb.ApplicationListener.from_application_listener_attributes(
+                    scope=self.scope, 
+                    id=listener_id,
+                    listener_arn=lnr_config["existing_listener_arn"],
+                    security_group= _myec2.GetSgForID(
+                        construct_id=listener_id,
+                        scope=self.scope,
+                        sg_id=lnr_config["security_group_id_for_existing_listener"]
+                        
+                    ) 
+                )
+            else:
+                listener = alb.add_listener(
+                    id=listener_id,
+                    port= lnr_config["port"],
+                    protocol=_alb.ApplicationProtocol.HTTPS,
+                    certificates = [_alb.ListenerCertificate.from_arn(lnr_config["https_certificate"])],
+                    default_action=_alb.ListenerAction.fixed_response(status_code=503),
+
+                )
+                
+            if lnr_config.get("rules",False):
+                self._add_listener_rules(listener,lnr_config["rules"])
+
+            return None
+
+    def _add_listener_rules(self,listener:_alb.ApplicationListener,rules_config: MyDict) -> None:
+        for rule in rules_config:
+            alb_listener_rule= _alb.ApplicationListenerRule(
+                self.scope, 
+                f'{self.construct_id}-{rule["id"]}',
+                listener=listener,
+                priority=rule["priority"],
+                conditions=self._get_rule_conditions(rule["rule_conditions"]),
+                target_groups=self._get_target_groups(rule["target_groups"])
+            )
+            Tags.of(alb_listener_rule).add("name",f'{self.construct_id}-{rule["id"]}')
+        
+        return None
+    
+    
+    def _get_rule_conditions(self,conditions_config: MyDict)-> Sequence[_alb.ListenerCondition]:
+        listener_rule_conditions: Sequence[_alb.ListenerCondition] = []
+
+        for condition in conditions_config:
+            hh_cond = condition.get("host_headers",[])
+            #Check if 1st entry is null(null is just to demonstarte placeholder)
+            if  len(hh_cond) > 0 and hh_cond[0] is not None :
+                listener_rule_conditions.append(_alb.ListenerCondition.host_headers(hh_cond))
+            
+            sip_cond = condition.get("source_ips",[])
+            #Check if 1st entry is null(null is just to demonstarte placeholder)
+            if len(sip_cond) > 0 and sip_cond[0] is not None:
+                source_ips: Sequence[str] = []
+                for sip in condition["source_ips"]:
+                    source_ips.append(sip)
+                listener_rule_conditions.append(_alb.ListenerCondition.source_ips(source_ips))
+            
+            path_patterns = condition.get("path_patterns",[])
+            #Check if 1st entry is null(null is just to demonstarte placeholder)
+            if len(path_patterns) > 0 and path_patterns[0] is not None:
+                listener_rule_conditions.append(_alb.ListenerCondition.path_patterns(path_patterns))
+            
+            http_request_method = condition.get("http_request_method",[])
+            #Check if 1st entry is null(null is just to demonstarte placeholder)
+            if len(http_request_method) > 0 and http_request_method[0] is not None:
+                listener_rule_conditions.append(_alb.ListenerCondition.http_request_methods(http_request_method))
+
+            query_string_conds = condition.get("query_string",[])
+            #Check if 1st entry is null(null is just to demonstarte placeholder)
+            if len(query_string_conds) > 0 and query_string_conds[0] is not None:
+                qs_conditions: Sequence[_alb.QueryStringCondition]= []
+                for qs_cond in query_string_conds:
+                    qs_conditions.append(
+                        _alb.QueryStringCondition(
+                            key= qs_cond.get("key",None),
+                            value= qs_cond["value"]
+                        )
+                    )
+                listener_rule_conditions.append(
+                    _alb.ListenerCondition.query_strings(qs_conditions) 
+                )
+            
+        return listener_rule_conditions
+    
+    def _get_target_groups(self,target_groups_config: MyDict)-> Sequence[_alb.ApplicationTargetGroup]:
+        target_groups: Sequence[_alb.ApplicationTargetGroup] = []
+        protocol: _alb.ApplicationProtocol = None
+        target_type: _alb.TargetType = None
+        for tg_config in target_groups_config:
+            # Add more protocols as needed
+            if tg_config.get("protocol","").upper() == "HTTP":
+                protocol = _alb.ApplicationProtocol.HTTP
+            # Add more target types as needed
+            
+            targets = None
+            # EC2 FARGATE
+            if tg_config["target_type"].upper() == "IP":
+                target_type = _alb.TargetType.IP
+                targets = [tg_config["target"]]
+            
+            # INSTANCE
+            elif tg_config["target_type"].upper() == "INSTANCE":
+                targets:Sequence[_alb.IApplicationLoadBalancerTarget] = []
+                target_type = _alb.TargetType.INSTANCE
+                if tg_config.get("target",False):
+                    targets = [_targets.InstanceIdTarget(tg_config["target"])]
+                elif tg_config.get("targets",False):
+                    for instance in tg_config["targets"]:
+                        instance_target= _targets.InstanceIdTarget(
+                            instance_id=instance,
+                            port=tg_config.get("port",None)
+                        )
+                        targets.append(instance_target)
+                else:
+                    raise Exception("Either target or targets is required for INSTANCE target_type")
+            
+            # LAMBDA
+            elif tg_config["target_type"].upper() == "LAMBDA":
+                target_type = _alb.TargetType.LAMBDA
+                targets=[_targets.LambdaTarget(_lambda.GetLambdaForArn(
+                    construct_id= f'{self.construct_id}-{tg_config["id"]}-lam-tgt',
+                    scope= self.scope,
+                    function_arn= tg_config["target"]
+                ))]
+                protocol= None # protocol not needed for Lambda
+            else:
+                raise Exception("Invalid target_type or not supported!!")
+            
+            if tg_config.get("name_override",False):    
+                tg_name = tg_config["name_override"]
+            else:
+                tg_name = f'{self.construct_id}-{tg_config["id"]}'
+            
+            timeout = None
+            if tg_config.get("health_check_timeout",False):
+                timeout= Duration.seconds(tg_config["health_check_timeout"])
+            
+            interval = None
+            if tg_config.get("health_check_interval",False):
+                interval= Duration.seconds(tg_config["health_check_interval"])
+            port=None
+            if tg_config.get("port",False):
+                port= tg_config["port"]
+            tg= _alb.ApplicationTargetGroup(
+                self.scope,
+                id=tg_name,
+                port= port,
+                target_group_name= tg_name,
+                health_check = _alb.HealthCheck(
+                    enabled= True if tg_config.get("health_check", None) is not None else False,
+                    path=tg_config.get("health_check",None),
+                    timeout= timeout,
+                    interval= interval
+                ),
+                protocol= protocol,
+                target_type= target_type,
+                targets= targets,
+                vpc=self.vpc_resource
+            )
+                 
+            target_groups.append(tg)
+            
+        return target_groups
+    
+    @staticmethod
+    def GetALBForArn(construct_id: str,scope: Construct,alb_arn:str)->_alb.ApplicationLoadBalancer:
+
+        return _alb.ApplicationLoadBalancer.from_lookup(
+            scope= scope,
+            id= construct_id,
+            load_balancer_arn= alb_arn,
+        )
+
+    def GetAttribute(self,attr_name: str,key) -> Any:
+        if attr_name == "dns":
+            return self.aws_resource.load_balancer_dns_name
+        if attr_name == "aws_resource":
+            return self.aws_resource
+        if attr_name == "dns_name":
+            return self.load_balancer_dns_name
+        
