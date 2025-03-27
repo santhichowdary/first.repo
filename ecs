@@ -1,0 +1,82 @@
+AWS ECS Documentation
+ Home
+ Welcome to the AWS ECS (Elastic Container Service) documentation. This guide covers all essential ECS components,
+ including Clusters, Fargate Services, Task Definitions, Auto Scaling, Environment Variables, and Load Balancers.
+ Navigate through the sections to find structured documentation with CDK implementation and JSON configurations for
+ easy reference.
+ ECS Cluster
+ ## Overview
+ An ECS cluster is a logical grouping of tasks and services.
+ ## CDK Implementation
+ ```python
+ import aws_cdk.aws_ecs as ecs
+ cluster = ecs.Cluster(
+    self, 
+    "MyEcsCluster",
+    vpc=self.vpc_resource,
+    cluster_name="my-cluster",
+    container_insights=True
+ )
+ ```
+ ## JSON Configuration
+ ```json
+ {
+  "ecs_cluster": {
+    "name": "my-cluster",
+    "vpc": "vpc-123456",
+    "container_insights": true
+  }
+ }
+```
+ Fargate Service
+ ## Overview
+ An ECS Fargate Service runs containers without managing EC2 instances.
+ ## CDK Implementation
+ ```python
+ service = ecs.FargateService(
+    self,
+    "MyFargateService",
+    cluster=cluster,
+    desired_count=2,
+    task_definition=task_definition,
+    vpc_subnets=self.vpc_resource.select_subnets(subnet_type=SubnetType.PUBLIC),
+    security_groups=[self.security_group]
+ )
+ ```
+ ## JSON Configuration
+ ```json
+ {
+ }
+  "fargate_service": {
+    "cluster": "my-cluster",
+    "desired_count": 2,
+    "subnets": ["subnet-123456", "subnet-654321"],
+    "security_group": "sg-987654"
+  }
+ ```
+ Task Definition
+ ## Overview
+ A task definition specifies the container configurations, including CPU, memory, and execution roles.
+ ## CDK Implementation
+ ```python
+task_definition = ecs.FargateTaskDefinition(
+    self,
+    "MyTaskDefinition",
+    task_role=iam.Role.from_role_arn(self, "TaskRole", role_arn="arn:aws:iam::123456789012:role/ecsTaskRole"),
+    execution_role=iam.Role.from_role_arn(self, "ExecutionRole",
+ role_arn="arn:aws:iam::123456789012:role/ecsExecutionRole"),
+    cpu=1024,
+    memory_limit_mib=2048
+ )
+ ```
+ ## JSON Configuration
+ ```json
+ {
+ }
+  "task_definition": {
+    "task_role": "arn:aws:iam::123456789012:role/ecsTaskRole",
+    "execution_role": "arn:aws:iam::123456789012:role/ecsExecutionRole",
+    "cpu": 1024,
+    "memory_limit": 2048
+  }
+ ```
