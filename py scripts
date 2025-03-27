@@ -1327,4 +1327,413 @@ class MyELBV2():
             return self.aws_resource
         if attr_name == "dns_name":
             return self.load_balancer_dns_name
+
+
+
+
+
+ecs.py
+
+
+from constructs import Construct
+from aws_cdk import Tags
+from aws_cdk import(
+    aws_ecs as _ecs,
+    aws_iam as _iam,
+    aws_ecr as _ecr,
+    aws_ssm as _ssm,
+    aws_secretsmanager as _secmgr,
+    Resource as cdkResource,
+    Duration,
+) 
+import boto3
+from aws_resources.aws_ec2 import MyEC2 as _myec2
+from aws_cdk.aws_ec2 import IVpc as _vpc
+import utils
+from utils import MyDict
+from typing import Any
+
+class MyFargateCluster():
+    def __init__(self,scope: Construct,construct_id: str,config: dict,**kwargs) ->None:
+        super().__init__(**kwargs)
         
+        # Common Attributes
+        self.scope: Construct = scope
+        self.construct_id: str = f'{construct_id}'
+        self.config:dict = config
+        self.created:bool = False
+        self.aws_resource: cdkResource = None
+        self.env: str = utils.get_environment()
+        self.vpc_resource: _vpc = scope.vpc_resource
+        self.region: str = utils.get_aws_region(scope)
+
+        self.lb_targets: dict[str, _ecs.IEcsLoadBalancerTarget] = {}
+        
+    def Create(self) -> cdkResource:
+        if self.created:
+            return self
+        
+        if self.config.get("name_override",False):    
+            cluster_name = f'{self.config["name_override"]}'
+        else:
+            cluster_name = f'{self.construct_id}-{self.config["resource_id"]}'
+        #creating a cluster
+        cluster = _ecs.Cluster(
+            self.scope,
+            id= f'{self.construct_id}-{self.config["resource_id"]}', 
+            vpc= self.vpc_resource,
+            cluster_name= cluster_name,
+            container_insights= True
+        )
+
+        # Create Fargate services
+        self._create_services(cluster,self.config["services"])
+
+        self.aws_resource = cluster
+        
+        # Add Tags if specified
+        if self.config.get("tags",False):
+            for key,value in self.config["tags"].items():
+                Tags.of(self.aws_resource).add(key,value)
+
+        self.created = True
+        return self
+
+    def _create_services(self,cluster: _ecs.Cluster , services_config: MyDict) -> None:
+
+        for svc_config in services_config:
+            service = _ecs.FargateService(
+                self.scope, 
+                id= f'{self.construct_id}-{svc_config["resource_id"]}',
+                cluster=cluster,
+                desired_count=svc_config["desired_count"],
+                task_definition=self._create_task_definition(
+                    svc_config["task_definition"],
+                    svc_config["resource_id"]
+                ),
+                vpc_subnets= _myec2.GetSubnetSelection(
+                    f'{self.construct_id}-{svc_config["resource_id"]}',
+                    self.scope,
+                    svc_config["vpc_subnets"]
+                ),
+                service_name=f'{self.construct_id}-{svc_config["resource_id"]}',
+                security_groups = [_myec2.GetSgForID(
+                    f'{self.construct_id}-{svc_config["resource_id"]}',
+                    self.scope,
+                    svc_config["security_group_id"]
+                )]
+            )
+            
+            self._add_autoscaling(service,svc_config["auto_scaling"],svc_config["resource_id"])
+            self._set_loadbalacer_targets(service,svc_config["task_definition"]["containers"])
+
+        return None
+
+    def _add_autoscaling(self,service: _ecs.FargateService , as_config: MyDict, svc_id: str) -> None:
+        scaling = service.auto_scale_task_count(
+            min_capacity = as_config["min_capacity"],
+            max_capacity = as_config["max_capacity"],
+        )
+        scaling.scale_on_cpu_utilization(
+            id= f'{self.construct_id}-{svc_id}-as-cpu',
+            target_utilization_percent=as_config["cpu_target_utilization"],
+            scale_in_cooldown= Duration.seconds(as_config["cpu_scale_in_cooldown"]),
+            scale_out_cooldown= Duration.seconds(as_config["cpu_scale_out_cooldown"]),
+        )
+        scaling.scale_on_memory_utilization(
+            id= f'{self.construct_id}-{svc_id}-as-mem',
+            target_utilization_percent=as_config["mem_target_utilization"],
+            scale_in_cooldown= Duration.seconds(as_config["mem_scale_in_cooldown"]),
+            scale_out_cooldown= Duration.seconds(as_config["mem_scale_out_cooldown"]),
+        )
+
+    def _create_task_definition(self, td_config: MyDict, svc_id: str) -> _ecs.TaskDefinition:
+        
+        td = _ecs.FargateTaskDefinition(
+            self.scope, 
+            id= f'{svc_id}-td',
+            task_role = _iam.Role.from_role_arn(
+                self.scope,
+                #mutable= False,
+                id= f'{svc_id}-td-tsk-role',
+                role_arn=td_config["task_role"]
+            ),
+            execution_role =  _iam.Role.from_role_arn(
+                self.scope,
+                #mutable= False,
+                id= f'{svc_id}-td-tsk-exec-role',
+                role_arn=td_config["execution_role"]
+            ),
+            cpu= td_config["cpu"],
+            memory_limit_mib= td_config["memory_limit"],
+            family = f'{self.construct_id}-{svc_id}-td',
+            runtime_platform= _ecs.RuntimePlatform(
+                operating_system_family= _ecs.OperatingSystemFamily.LINUX,
+                cpu_architecture= _ecs.CpuArchitecture.X86_64
+            )
+        )
+
+        self._add_containers(td,td_config["containers"]) # containers is mandatory
+
+        return td
+
+    def _add_containers(self, td: _ecs.TaskDefinition, containers_config: MyDict)->None:
+        def _get_repository(repo_name: str, res_id: str)->_ecr.IRepository:
+            return _ecr.Repository.from_repository_name(
+                self.scope,
+                id= f'{self.construct_id}-{res_id}-{repo_name}-ecr',
+                repository_name= f'{repo_name}'
+            )
+        def _get_or_create_ssm_parameter(var:dict, cc_id: str) -> None:
+            ssm_client = boto3.client("ssm",region_name=f'{self.region}')
+            try:                
+                response = ssm_client.describe_parameters(
+                    ParameterFilters=[
+                        {
+                            'Key': "Name",
+                            'Values': [var["ssm_parameter_name"]]
+                        },
+                    ]
+                )
+                if len(response["Parameters"]) > 0:
+                    container.add_secret(
+                        name= var["env_var_name"],
+                        secret= _ecs.Secret.from_ssm_parameter(
+                            parameter=_ssm.StringParameter.from_string_parameter_name(
+                                scope= self.scope, 
+                                id= f'{cc_id}-{var["env_var_name"]}-ssm-secret',
+                                string_parameter_name= var["ssm_parameter_name"],
+                            )
+                        )
+                    )
+                    return
+            except Exception as err:
+                print(f'EXCEPTION while querying SSM Parameter : {err}!!')
+    
+            container.add_secret(
+                name= var["env_var_name"],
+                secret= _ecs.Secret.from_ssm_parameter(
+                    parameter=_ssm.StringParameter(
+                        scope= self.scope, 
+                        id= f'{cc_id}-{var["env_var_name"]}-ssm-secret',
+                        parameter_name= var["ssm_parameter_name"],
+                        string_value= var.get("ssm_parameter_value","NA")
+                    )
+                )
+            )
+
+        for cc in containers_config:
+            if cc.get("name_override",False):    
+                container_name = f'{cc["name_override"]}'
+            else:
+                container_name = f'{self.scope.stackName}-{cc["resource_id"]}'
+            
+            # Handle Container Image registry
+            image: _ecs.ContainerImage = None
+            if cc.get("ecr_repo",False) and cc.get("registry_repo",False):
+                raise Exception("Invalid ECR Repo attribute!! Cannot specify both ecr_repo and registry_repo")
+            elif cc.get("ecr_repo",False):
+                image = _ecs.ContainerImage.from_ecr_repository(_get_repository(cc["ecr_repo"],cc["resource_id"]))
+            elif cc.get("registry_repo",False):
+                image = _ecs.ContainerImage.from_registry(cc["registry_repo"])
+            else:
+                raise Exception("ECR Repo not specified or Invalid!! Supported ecr_repo and registry_repo")
+            
+            cpu= None
+            if cc.get("cpu",False):
+                cpu= cc["cpu"]
+
+            memory_limit_mib= None
+            if cc.get("memory",False):
+                memory_limit_mib= cc["memory"]
+
+            container = td.add_container(
+                id= f'{self.construct_id}-{cc["resource_id"]}',
+                container_name= container_name,
+                image= image, # write ur ecr repor
+                memory_limit_mib= memory_limit_mib,
+                cpu= cpu,
+                essential= cc.get("essential",True),
+                logging= _ecs.LogDrivers.aws_logs(
+                    stream_prefix="ecs",  # Log stream prefix
+                    log_group=cc["log_group"]
+                ), # Use the created log group,
+                readonly_root_filesystem= cc.get("readonly_root_filesystem",None)
+            )
+            
+            port_mapping: _ecs.PortMapping = None
+            if cc.get("ports",False):
+                for port in cc["ports"]:
+                    port_mapping = _ecs.PortMapping(
+                        container_port= port,
+                        protocol= _ecs.Protocol.TCP
+                    )
+                    container.add_port_mappings(port_mapping)
+            elif cc.get("port",False):
+                port_mapping = _ecs.PortMapping(
+                    container_port= cc["port"],
+                    protocol= _ecs.Protocol.TCP
+                )
+                container.add_port_mappings(port_mapping)
+
+            #Add env variables
+            container.add_environment("APP_ENV",self.env)
+            if cc.get("environment_variables",False):
+                for var in cc["environment_variables"]:
+                    for key, value in var.items():
+                        container.add_environment(key, value)
+
+            
+
+            # Add env var valuefrom SSM  parameter store
+            if cc.get("ssm_env_vars",False):
+                for var in cc["ssm_env_vars"]:
+                    # Create ssm parameter if it doesn't exist
+                    _get_or_create_ssm_parameter(var,cc["resource_id"])  
+            
+            # Add env var valuefrom Secret Manager
+            if cc.get("secret_env_vars",False):
+                for var in cc["secret_env_vars"]:
+                    # Associate secret with env var
+                    container.add_secret(
+                        name= var["env_var_name"],
+                        secret= _ecs.Secret.from_secrets_manager(
+                            _secmgr.Secret.from_secret_name_v2(
+                                scope= self.scope, 
+                                id= f'{cc["resource_id"]}-{var["env_var_name"]}-sm-secret',
+                                secret_name= var["secret_name"]
+                            )
+                        )
+                    )
+
+    def _set_loadbalacer_targets(self,service: _ecs.FargateService,container_config: MyDict):
+        # Create a load balancer target and Add it to the lb_targets dict
+        # This will be referenced by ALB Target groups via Resource reference.
+        # Example:
+        '''
+        "target":
+        {
+            "fargate_service": "${aws_ecs_fargate:fargate-cluster:lb_targets}",
+            "container_id": "${env.Env}-react-java-helloworld-service"
+        }
+        '''
+        for cc in container_config:
+            # non-essential contaoners need not be LB targets
+            if cc.get("essential") is False:
+                continue
+            if cc.get("name_override",False):    
+                container_name = f'{cc["name_override"]}'
+            else:
+                container_name = f'{self.scope.stackName}-{cc["resource_id"]}'
+            
+            # if cc.get("ports",False):
+            #     port= cc["ports"][0] # use 1st port as per doc
+            # elif cc.get("port",False):
+            #     port= cc["port"]
+            # else:
+            #     raise Exception("Invalid port for LB Target")
+
+            lbt = service.load_balancer_target(
+                    container_name= container_name
+                    #container_port= port,
+                    #protocol= _ecs.Protocol.TCP
+                )
+            self.lb_targets[cc["resource_id"]] = lbt
+
+    def GetAttribute(self,attr_name: str,key) -> Any:
+        if attr_name == "lb_targets" and key is None:
+            return self.lb_targets
+        elif attr_name == "lb_targets" and key is not None:
+            return self.lb_targets[key]
+        if attr_name == "container_ip" and key is None:
+            return next(iter(self.lb_targets.values()))
+            #return self.lb_targets
+        elif attr_name == "container_ip" and key is not None:
+            return self.lb_targets[key]
+        
+        
+        mkdocs-ecs.live.md
+
+
+## aws_ecs reference
+
+Amazon Elastic Container Service (ECS) is a fully managed container orchestration service that makes it easy to deploy, manage, and scale containerized applications using Docker. ECS integrates seamlessly with other AWS services, providing a robust platform for running microservices and distributed applications.
+### ECS Example
+```json
+
+{
+  "stack_id": "test-ecs-stack",
+  "resource_prefix": "test-java",
+  "aws_region": "us-west-2",
+  "resources": [
+    {
+      "resource_type": "aws_ecs_cluster",
+      "resource_id": "cluster1",
+      "cluster_name": "my-test-cluster",
+      "tags": {
+        "env": "test",
+        "project": "java"
+      }
+    },
+    {
+      "resource_type": "aws_ecs_task_definition",
+      "resource_id": "taskdef1",
+      "family": "my-task-family",
+      "container_definitions": [
+        {
+          "name": "my-container",
+          "image": "123456789012.dkr.ecr.us-west-2.amazonaws.com/my-test-repository:latest",
+          "memory": 512,
+          "cpu": 256,
+          "essential": true,
+          "portMappings": [
+            {
+              "containerPort": 80,
+              "hostPort": 80
+            }
+          ],
+          "environment": [
+            {
+              "name": "ENV_VAR",
+              "value": "test"
+            }
+          ],
+          "logConfiguration": {
+            "logDriver": "awslogs",
+            "options": {
+              "awslogs-group": "/ecs/my-log-group",
+              "awslogs-region": "us-west-2",
+              "awslogs-stream-prefix": "ecs"
+            }
+          }
+        }
+      ],
+      "requires_compatibilities": ["FARGATE"],
+      "network_mode": "awsvpc",
+      "cpu": "256",
+      "memory": "512"
+    },
+    {
+      "resource_type": "aws_ecs_service",
+      "resource_id": "service1",
+      "service_name": "my-test-service",
+      "cluster": "cluster1",
+      "task_definition": "taskdef1",
+      "desired_count": 1,
+      "launch_type": "FARGATE",
+      "network_configuration": {
+        "awsvpc_configuration": {
+          "subnets": ["subnet-12345678"],
+          "security_groups": ["sg-12345678"],
+          "assign_public_ip": "ENABLED"
+        }
+      },
+      "tags": {
+        "env": "test",
+        "project": "java"
+      }
+    }
+  ]
+}
+
+```
