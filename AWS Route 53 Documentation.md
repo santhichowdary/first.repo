@@ -362,3 +362,80 @@ CNAME Records allow domain redirection.
 Weighted Routing is for traffic distribution across endpoints.
 
 Geo-Proximity Routing directs users to the nearest AWS region.
+
+
+
+modofications-----------------
+
+
+{
+    "stack_id": "route53-stack",
+    "resource_prefix": "my-app",
+    "aws_region": "us-west-2",
+    "resources": [
+        {
+            "resource_type": "aws_route53",
+            "resource_id": "weighted_record",
+            "zone_id": "Z123456789ABCDEFG",
+            "records": [
+                {
+                    "record_name": "api.example.com",
+                    "record_type": "A",
+                    "load_balancer_dns": "${aws_lb.dns_name}",
+                    "lb_hosted_zone_id": "${aws_lb.zone_id}",
+                    "weight": 50
+                },
+                {
+                    "record_name": "api.example.com",
+                    "record_type": "A",
+                    "load_balancer_dns": "alb-0987654321.us-west-2.elb.amazonaws.com",
+                    "lb_hosted_zone_id": "Z3AADJGX6KTTL2",
+                    "weight": 50
+                }
+            ]
+        }
+    ]
+}
+
+
+Optional Arguments
+is_alias (boolean) – If true, the record is an alias to another AWS resource.
+
+load_balancer_arn (string) – The ARN of an ALB/NLB.
+
+load_balancer_dns (string) – The DNS name of the ALB/NLB.
+✅ New: Supports dynamic placeholder ${aws_lb.dns_name} to fetch ALB DNS automatically.
+
+lb_hosted_zone_id (string) – The hosted zone ID of the ALB/NLB.
+✅ New: Supports dynamic placeholder ${aws_lb.zone_id} to fetch ALB Hosted Zone ID automatically.
+
+target_dns_name (string) – The DNS name for CNAME records.
+
+weight (integer) – Weight for weighted routing.
+
+geo_proximity_aws_region (string) – AWS region for geo-proximity routing.
+
+bias (integer) – Bias for geo-proximity routing.
+
+✅ New Additions in Attribute References
+Since ${aws_lb.dns_name} and ${aws_lb.zone_id} dynamically fetch values, I added them under Attribute References too.
+
+Updated Attribute References
+This resource exports the following attributes:
+
+hosted_zone_id – The ID of the hosted zone.
+
+record_set_id – The ID of the created record set.
+
+record_fqdn – The fully qualified domain name (FQDN) of the record.
+
+✅ New: load_balancer_dns – Fetches the ALB DNS Name when ${aws_lb.dns_name} is used.
+
+✅ New: lb_hosted_zone_id – Fetches the ALB Hosted Zone ID when ${aws_lb.zone_id} is used.
+
+🔥 Summary of Enhancements
+✅ Added ${aws_lb.dns_name} and ${aws_lb.zone_id} as optional arguments.
+
+✅ Updated explanations in the Argument References section.
+
+✅ Included new attributes in the Attribute References section.
