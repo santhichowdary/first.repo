@@ -588,6 +588,135 @@ Edit
 
 
 
+modofications::
+
+IAM Role for API Gateway and Lambda
 
 
+{
+    "stack_id": "contactdb-apig-lambda",
+    "resource_prefix": "contactdb-apig-lambda",
+    "aws_region": "us-west-2",
+    "resources": [
+        {
+            "resource_type": "aws_api_gateway",
+            "resource_id": "apig",
+            "name_override": "non-prod-contactdb-processor-flow",
+            "description": "some description",
+            "endpoint_type": "Regional",
+            "deployment": {
+                "stage_name": "dev",
+                "variables": {
+                    "env": "test",
+                    "var1": "value1"
+                }
+            }
+        }
+    ]
+}
+📌 Explanation:
+✔️ Grants permissions for Lambda execution.
+✔️ Includes CloudWatch Logs and X-Ray tracing.
 
+2)API Gateway with a POST Method
+Creates a REST API with a POST method at /.
+
+{
+    "stack_id": "contactdb-apig-lambda",
+    "aws_region": "us-west-2",
+    "resources": [
+        {
+            "resource_type": "aws_api_gateway",
+            "resource_id": "apig",
+            "api_resources": [
+                {
+                    "path": "/",
+                    "id": "root",
+                    "methods": [
+                        {
+                            "type": "POST"
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}
+📌 Explanation:
+✔️ Defines a POST method on the root (/) path.
+✔️ Allows API Gateway to accept HTTP POST requests.
+
+
+3)API Gateway with Lambda Integration
+Connects an API Gateway to a Lambda function.
+
+{
+    "stack_id": "contactdb-apig-lambda",
+    "aws_region": "us-west-2",
+    "resources": [
+        {
+            "resource_type": "aws_api_gateway",
+            "resource_id": "apig",
+            "name_override": "non-prod-contactdb-processor-flow",
+            "endpoint_type": "Regional",
+            "integration": {
+                "type": "AWS_LAMBDA",
+                "integration_options": {
+                    "arn": "arn:aws:lambda:us-west-2:704726041651:function:dev-apig-backed-lambda"
+                }
+            }
+        },
+        {
+            "resource_type": "aws_lambda",
+            "resource_id": "apig-lambda",
+            "name_override": "dev-apig-backed-lambda",
+            "handler": "lambda_function.lambda_handler",
+            "runtime": "PYTHON3.12",
+            "timeout": 60,
+            "role_arn": "arn:aws:iam::704726041651:role/contactdb-apig-lambda-role"
+        }
+    ]
+}
+
+ Explanation:
+✔️ API Gateway is integrated with AWS Lambda.
+✔️ Uses Lambda function dev-apig-backed-lambda.
+✔️ Lambda function ARN is arn:aws:lambda:us-west-2:704726041651:function:dev-apig-backed-lambda.
+✔️ IAM role ARN is arn:aws:iam::704726041651:role/contactdb-apig-lambda-role.
+
+4)Basic API Gateway Setup
+Creates an API Gateway with a Regional endpoint.
+
+json
+Copy
+Edit
+
+
+{
+    "stack_id": "contactdb-apig-lambda",
+    "resource_prefix": "contactdb-apig-lambda",
+    "aws_region": "us-west-2",
+    "resources": [
+        {
+            "resource_type": "aws_api_gateway",
+            "resource_id": "apig",
+            "name_override": "non-prod-contactdb-processor-flow",
+            "description": "some description",
+            "endpoint_type": "Regional",
+            "deployment": {
+                "stage_name": "dev",
+                "variables": {
+                    "env": "test",
+                    "var1": "value1"
+                }
+            }
+        }
+    ]
+}
+
+ Explanation:
+✔️ Creates an API Gateway named non-prod-contactdb-processor-flow.
+✔️ Uses a Regional endpoint.
+✔️ Deploys to the dev stage with environment variables.
+
+"role_arn": "${contactdb-apig-lambda:role:arn}"   reference
