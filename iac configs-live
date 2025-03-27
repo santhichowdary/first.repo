@@ -1,0 +1,1055 @@
+ecr
+
+
+{
+    "704726041651":
+    {
+        "stack_id": "ecr-with-lifecycle-rules",
+        "resource_prefix": "ecr-with-lifecycle-rules",
+        "aws_region": "us-west-2",
+        "resources":[
+            {
+                "resource_type": "aws_ecr",
+                "resource_id": "repo",
+                "name_override": "test-repo-with-lifecycle-rules",
+                "image_scan_on_push": true,
+                
+                "<--lifecycle rules are enabled by default ,add below to disable it": null,
+                "enable_lifecycle_rule" : false,
+                
+                "<-- below is to override the default lifecycle rule": null,
+                "lifecycle_rule": {
+                    "description": "keep last 5 images",
+                    "<---default image_count is 15-->": null,
+                    "image_count": 5
+                }
+            }
+        ]
+    }
+}
+
+
+
+
+rte-53-v2
+
+{
+    "704726041651":
+    {
+        "stack_id": "rte53-weighted",
+        "resource_prefix": "rte53-weighted",
+        "aws_region": "us-west-2",
+        "vpc":
+        {
+            "name" : "vpc",
+            "id" : "vpc-0fe0ccb4f6f842818"
+        },
+        "resources":[
+            {
+                "resource_type": "aws_route53_v2",
+                "resource_id": "test-url",
+                "zone_id": "Z06649533CSNLLSPNH3EY",
+                "records":[    
+                    {
+                        "record_name": "test-deleteme.catalyst-tca-nonprod.aws.fisv.cloud",
+                        "record_type": "A",
+                        "id": "wr-nrt",
+                        "weight": 255,
+                        "lb_hosted_zone_id": "Z1H1FL5HABSF5",
+                        "load_balancer_dns": "internal-nonprod-catalyst-nrt-lb-244791555.us-west-2.elb.amazonaws.com",
+                        "<-load_balancer_dns": "${rte53-weighted:lb-nrt:dns_name}"
+                    },
+                    {
+                        "record_name": "test-deleteme.catalyst-tca-nonprod.aws.fisv.cloud",
+                        "record_type": "A",
+                        "id": "wr-rt",
+                        "lb_hosted_zone_id": "Z1H1FL5HABSF5",
+                        "weight": 0,
+                        "load_balancer_dns": "internal-nonprod-catalyst-otp-lb-1881144703.us-west-2.elb.amazonaws.com",
+                        "<-load_balancer_dns": "${rte53-weighted:lb-rt:dns_name}"
+                          
+                    },
+                    {
+                        "record_name": "geoprox-deleteme.catalyst-tca-nonprod.aws.fisv.cloud",
+                        "record_type": "A",
+                        "id": "wr-geop",
+                        "lb_hosted_zone_id": "Z1H1FL5HABSF5",
+                        "geo_proximity_aws_region": "us-west-2",
+                        "bias": 0,
+                        "load_balancer_dns": "internal-nonprod-catalyst-otp-lb-1881144703.us-west-2.elb.amazonaws.com",
+                        "<-load_balancer_dns": "${rte53-weighted:lb-rt:dns_name}"
+                          
+                    }
+                ]
+            },
+            {
+                "<-- not being used - just for potential use -->": null,
+                "resource_type": "aws_elbv2",
+                "resource_id": "lb-nrt",
+                "existing_alb_arn": "arn:aws:elasticloadbalancing:us-west-2:704726041651:loadbalancer/app/nonprod-catalyst-nrt-lb/b1b843f550e8ab3d",
+                "listeners":[
+                    {
+                        "id": "lnr-nrt",
+                        "existing_listener_arn": "arn:aws:elasticloadbalancing:us-west-2:704726041651:listener/app/nonprod-catalyst-nrt-lb/b1b843f550e8ab3d/580f1b77a41b35f3",
+                        "security_group_id_for_existing_listener": "sg-0ed05ea439ab3c74b"
+                    }
+                ]
+            },
+            {
+                "<-- not being used - just for potential use -->": null,
+                "resource_type": "aws_elbv2",
+                "resource_id": "lb-rt",
+                "existing_alb_arn": "arn:aws:elasticloadbalancing:us-west-2:704726041651:loadbalancer/app/nonprod-catalyst-otp-lb/23914056de06b368",
+                "listeners":[
+                    {
+                        "id": "lnr-rt",
+                        "existing_listener_arn": "arn:aws:elasticloadbalancing:us-west-2:704726041651:listener/app/nonprod-catalyst-otp-lb/23914056de06b368/8602515830e9c115",
+                        "security_group_id_for_existing_listener": "sg-0ed05ea439ab3c74b"
+                    }
+                ]
+            }
+        ]
+    }
+}
+
+
+
+cloudwatch
+
+{
+    "704726041651":
+    {
+        "stack_id": "alarm-sns",
+        "resource_prefix": "alarm-sns",
+        "aws_region": "us-west-2",
+        "vpc":
+        {
+            "name" : "vpc",
+            "id" : "vpc-0fe0ccb4f6f842818"
+        },
+        "resources":[
+            {
+                "resource_type": "aws_cloudwatch_alarm",
+                "resource_id": "cpu",
+                "threshold": 1,
+                "evaluation_periods": 1,
+                "comparison_operator": "GREATER_THAN_OR_EQUAL_TO_THRESHOLD",
+                "log_metric":{
+                    "metric_name": "msk-topic",
+                    "metric_namespace": "msk-my-namespace",
+                    "<--statistic one of 'min,max,avg,sum,n'": null,
+                    "statistic": "n",
+                    "log_group_name": "/aws/msk/logs",
+                    "filter_name": "my-filter-name",
+                    "filter_pattern": "topic",
+                    "<--Below are optional-->": null,
+                    "default_value": 1,
+                    "metric_value": "2",
+                    "<-- unit one of 'none,count,seconds,milliseconds,percent,count_per_second,bytes': ": null,
+                    "unit": "count",
+                    "<--dimensions": {
+
+                    }
+                },
+                "<--alb_metric": {
+                    "alb_arn": "arn:aws:elasticloadbalancing:us-west-2:704726041651:loadbalancer/app/dev-react-hw-lb/c7a9a13c489c4572",
+                    "metric_name": "HTTPCode_ELB_5XX_Count",
+                    "label": "HTTPCode_Target_5XX_Count",
+                    "statistic": "Sum",
+                    "period_minutes": 5
+                },
+                "actions": [
+                    {
+                        "id": "sns-topic1",
+                        "<-topic_arn": "arn:aws:sns:xyz",
+                        "topic_arn": "${alarm-sns:topic:arn}"
+                    }
+                ]
+            },
+            {
+                "resource_type": "aws_sns",
+                "resource_id": "topic",
+                
+                "topic_name": "email_sub_test",
+                "name_override": "dev-test0331",
+                "subscriptions": [
+                    {
+                        "email_id": "xyz@fiserv.com",
+                        "subscription_filter": 
+                        {}
+                    },
+                    {
+                        "sms_phone_number": "1234567890",
+                        "subscription_filter": 
+                        {}
+                    },
+                    {
+                        "lambda_arn": "${}",
+                        "subscription_filter": 
+                        {}
+                    },
+                    {
+                        "sqs_arn": "${}",
+                        "subscription_filter": 
+                        {
+                            "allow_list":
+                            {
+                                "type": [
+                                    "twilio_call_completed"
+                                  ]
+                            },
+                            "deny_list":
+                            {
+                                "type2": [
+                                    "twilio_call_not_completed"
+                                  ]
+                            }
+                           
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+}
+
+
+sns
+
+
+
+{
+    "704726041651":
+    {
+        "stack_id": "alarm-sns",
+        "resource_prefix": "alarm-sns",
+        "aws_region": "us-west-2",
+        "vpc":
+        {
+            "name" : "vpc",
+            "id" : "vpc-0fe0ccb4f6f842818"
+        },
+        "resources":[
+            {
+                "resource_type": "aws_cloudwatch_alarm",
+                "resource_id": "cpu",
+                "threshold": 1,
+                "evaluation_periods": 1,
+                "comparison_operator": "GREATER_THAN_OR_EQUAL_TO_THRESHOLD",
+                "<-log_metric":{
+                    "metric_name": "msk-topic",
+                    "metric_namespace": "msk-my-namespace",
+                    "log_group_name": "/aws/msk/logs",
+                    "filter_pattern": "topic",
+                    "<--dimensions": {
+
+                    }
+                },
+                "alb_metric": {
+                    "alb_arn": "arn:aws:elasticloadbalancing:us-west-2:704726041651:loadbalancer/app/dev-react-hw-lb/c7a9a13c489c4572",
+                    "metric_name": "HTTPCode_ELB_5XX_Count",
+                    "label": "HTTPCode_Target_4XX_Count",
+                    "statistic": "Sum",
+                    "period_minutes": 5
+                },
+                "actions": [
+                    {
+                        "id": "sns-topic1",
+                        "<-topic_arn": "arn:aws:sns:xyz",
+                        "topic_arn": "${alarm-sns:topic:arn}"
+                    }
+                ]
+            },
+            {
+                "resource_type": "aws_sns",
+                "resource_id": "topic",
+                
+                "topic_name": "email_sub_test",
+                "name_override": "dev-test0331",
+                "subscriptions": [
+                    {
+                        "email_id": "xyz@fiserv.com",
+                        "subscription_filter": 
+                        {}
+                    },
+                    {
+                        "sms_phone_number": "1234567890",
+                        "subscription_filter": 
+                        {}
+                    },
+                    {
+                        "lambda_arn": "${}",
+                        "subscription_filter": 
+                        {}
+                    },
+                    {
+                        "sqs_arn": "${}",
+                        "subscription_filter": 
+                        {
+                            "allow_list":
+                            {
+                                "type": [
+                                    "twilio_call_completed"
+                                  ]
+                            },
+                            "deny_list":
+                            {
+                                "type2": [
+                                    "twilio_call_not_completed"
+                                  ]
+                            }
+                           
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+}
+
+
+
+
+apigateway-   data procsssin
+
+{
+    "704726041651":
+    {
+        "stack_id": "contactdb-apig-lambda",
+        "resource_prefix": "contactdb-apig-lambda",
+        "aws_region": "us-west-2",
+        "vpc":
+        {
+            "name" : "vpc",
+            "id" : "vpc-47a36920"
+        },
+        "resources":[
+            {
+                "resource_type": "aws_api_gateway",
+                "resource_id": "apig",
+                "name_override": "non-prod-contactdb-processor-flow",
+                "description": "some description",
+                "endpoint_type": "Regional",
+                "deployment":{
+                    "stage_name": "dev",
+                    "variables": {
+                        "env": "test",
+                        "var1": "value1"
+                    }
+                },
+                "integration":{
+                    "type": "AWS_LAMBDA",
+                    "integration_options": {
+                        "arn": "${contactdb-apig-lambda:apig-lambda:arn}"
+                        
+                    }
+                },
+                "api_resources": [
+                    {
+                        "path": "/",
+                        "id": "root",
+                        "methods":[
+                            {
+                                "type": "POST"
+                                
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "resource_type": "aws_lambda",
+                "resource_id": "apig-lambda",
+                "name_override": "dev-apig-backed-lambda",
+                "handler": "lambda_function.lambda_handler",
+                "code_path_local": "lambda_assets",
+                "<--s3_bucket_name-->": "${test-java-lambda:lambda-test-bucket:name}",
+                "<--s3_bucket_key-->": "dev/java-test.jar",
+                "<--security_group_id-->": "sg-xyz1234 or ${stack_is:res_id:sg_id}",
+                "security_group_id": "sg-0a3def40cec33b7ab",
+                "memory_size": 10240,
+                "ephemeral_storage_size": 4000,
+                "vpc_subnets": [
+                    {
+                        "id": "subnet-01912c1676e077d9b",
+                        "zone": "us-west-2b"
+                    },
+                    {
+                        "id": "subnet-0b64d70c68db31bef",
+                        "zone": "us-west-2c"
+                    }
+                ],
+                "runtime": "PYTHON3.12",
+                "<--asyn_duration_seconds": 21600,
+                "<--parameter_secret_layer":"arn:aws:lambda:us-west-2:345057560386:layer:AWS-Parameters-and-Secrets-Lambda-Extension:11",
+                "timeout": 60,
+                "role_arn": "${contactdb-apig-lambda:role:arn}",
+                "env_vars": {
+                    "env": "dev"
+                },
+                "tags": {
+                    "runtime": "python 3.12",
+                    "env": "dev"
+                }
+            },
+            {
+                "resource_type": "aws_iam",
+                "resource_id": "role",
+                "assume_role_principal": "lambda.amazonaws.com",
+                "policies":[
+                    {
+                        "inline_policies":[
+                            {
+                                "name" : "apig-lambda-policy",
+                                "path": "policies/apig-lambda.json"
+                            }
+                        ]
+                    },
+                    {
+                        "managed_policy_arns":[
+                            "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+                            "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess",
+                            "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole",
+                            "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess",
+                            "arn:aws:iam::aws:policy/CloudWatchLambdaInsightsExecutionRolePolicy"
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}
+
+
+
+
+local 
+
+{
+    "704726041651":
+    {
+        "stack_id": "test-apig-lambda",
+        "resource_prefix": "test-apig-lambda",
+        "aws_region": "us-west-2",
+        "vpc":
+        {
+            "name" : "vpc",
+            "id" : "vpc-0fe0ccb4f6f842818"
+        },
+        "resources":[
+            {
+                "resource_type": "aws_api_gateway",
+                "resource_id": "name_for_api",
+                "name_override": "non-prod-contactdb-processor-flow",
+                "description": "some description",
+                "endpoint_type": "Regional",
+                "api_keys": [
+                    {
+                        "name": "test",
+                        "description": "test",
+                        "enabled": true
+                    },
+                    {
+                        "name": "test2",
+                        "description": "test2",
+                        "enabled": false
+                    }
+                ],
+                
+                "stages": [
+                    {
+                        "stage_name": "test",
+                        "variables": {
+                            "env": "test",
+                            "var1": "value1"
+                        }
+                    }
+                ],
+                "usage_plans": [
+                    {
+                        "name": "test",
+                        "description": "test",
+                        "quota": {
+                            "limit": 1000,
+                            "offset": 2,
+                            "period": "MONTH"
+                        },
+                        "throttle": {
+                            "burst_limit": 100,
+                            "rate_limit": 100
+                        },
+                        "api_keys":[
+                            "test",
+                            "test2"
+                        ],
+                        "stages": [
+                            "test"
+                        ]
+                    }
+                ],
+                
+                "integration":{
+                    "type": "AWS_LAMBDA",
+                    "integration_options": {
+                        "arn": "${test-apig-lambda:apibackend_proxy:arn}"
+                        
+                    }
+                },
+                "api_resources": [
+                    {
+                        "path": "/",
+                        "id": "root",
+                        "methods":[
+                            {
+                                "type": "GET"
+                                
+                            }
+                        ]
+                    },
+                    {
+                        "path": "level1",
+                        "id": "level2",
+                        "parent_id": "root",
+                        "methods":[
+                            {
+                                "type": "GET"
+                            }
+                        ]
+                    },
+                    {
+                        "path": "{proxy}",
+                        "id": "proxy",
+                        "parent_id": "level2",
+                        "methods":[
+                            {
+                                "type": "ANY",
+                                "integration":{
+                                    "type": "AWS_LAMBDA",
+                                    "integration_options": {
+                                        "arn": "${test-apig-lambda:apibackend_proxy:arn}"
+                                        
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "resource_type": "aws_lambda",
+                "resource_id": "apibackend_integration",
+                "handler": "helloworld.lambda_handler",
+                "code_path_local": "lambda_assets",
+                "timeout": 60,
+                "runtime": "python"
+            },
+            {
+                "resource_type": "aws_lambda",
+                "resource_id": "apibackend_proxy",
+                "handler": "proxyhelloworld.my_lambda_handler",
+                "code_path_local": "lambda_assets",
+                "timeout": 60,
+                "runtime": "python"
+            }  
+        ]
+    }
+}
+
+
+
+
+ecs fargate
+
+
+
+Create your first ECS hosted web application:
+Step 1: If you have not created 'ecs' folder under  'iac-configs' root folder please create it.
+
+Step 2: Create folder name matching with your application name  under 'ecs'  folder.
+
+Note: Please choose the  app name relevant to type of application code deployed in  this  ecs hosted application
+
+Ex: catalyst-sales-ui, marketplace-reporting-services. 
+
+Please avoid giving generic name like catalyst-ui and marketplace-rest-api rather add substring about what this ui or rest-api do.
+
+Step 3: Add all contents of below sample hello-world_v2 folder of seed template project
+
+-------------------pic-----------
+
+Step 4: Based on your application needs , please do update below two policy files present in policies subfolder to make it more restrictive or generic:
+
+------------pic---------
+
+ Note: If Needed, please feel free to add new policy.json file for env specific use case and refer that in corresponding env.sh file.
+
+Step 5: Based on environment(env) in which you want to provision the ecs application , please rename stage.sh file as env.sh accordingly.
+
+Ex: If you are provisioning ecs application for development env, then rename stage.sh file as dev.sh. 
+
+ If you want to provision in both dev and stage, then copy stage.sh file and rename it as dev.sh so that you can have both dev.sh file and stage.sh file.
+
+Step 6: Please update all listed variables of env.sh file as per your AWS Account's detail and application's need.
+
+Below is example of stage.sh file :
+
+export VAULT_ROLE_ID="ENTER_YOUR_AWS_AC_VAULT_ROLE_ID"
+export VAULT_SECRET_ID="ENTER_YOUR_AWS_AC_VAULT_SECRET_ID"
+export VAULT_NAMESPACE="ENTER_YOUR_AWS_AC_VAULT_NAMESPACE"
+export VAULT_ROLE="ENTER_YOUR_AWS_AC_VAULT_ROLE"
+export ENV="stage"
+# Location of hello_world_reg, aws=means aws account's selected region has java17_template_port9000 ecr has hw image with tag as  java17_template_port9000 and latest
+# glr=IAC app config project should have CI_REGISTRY_USER and CI_JOB_TOKEN CICD variable updated with authorized user of https://gitlab.onefiserv.net/mstechpe/iac/core-cdk repo
+export hello_world_reg_loc="glr"
+ 
+export aws_region="us-east-1"
+export aws_account=307946647371
+ 
+export vpc='{
+            "name" : "vpc",
+            "id" : "vpc-09dbbd21666a59676"
+       }'
+#svc
+export vpc_subnets='[
+                        {
+                            "id": "subnet-02feacfc92065d933",
+                            "zone": "us-east-1a"
+                        },
+                        {
+                            "id": "subnet-002e3cbbeeef079e9",
+                            "zone": "us-east-1b"
+                        }
+                    ]'
+export auto_scaling='{
+                            "min_capacity": 1,
+                            "max_capacity": 4,
+                            "cpu_target_utilization": 70,
+                            "cpu_scale_in_cooldown": 300,
+                            "cpu_scale_out_cooldown": 300,
+                            "mem_target_utilization": 70,
+                            "mem_scale_in_cooldown": 300,
+                            "mem_scale_out_cooldown": 300
+                    }'                  
+#task
+export task_memory_limit=8192
+export task_cpu=2048
+#container
+export ports='[9000]'
+export memory=512
+export cpu=1024
+export environment_variables='[
+                                {"APP_ENV":"stage"},
+                                {"application_name":"hello-world"},
+                                {"created_by":"mukesh.kumar4@fiserv.com"}
+                               ]'
+#sg-svc
+export ingress='[{
+                    "type": "construct",
+                    "peer": "sg-0e83d2e60a0757493",
+                    "port": 9000
+                }]'
+ 
+#lg
+export subscription_filter_arn="arn:aws:logs:us-east-1:871681779858:destination:6f8c45cc-97d5-4fc6-9165-18fea6640d16"
+#task-execution-role
+export ter_policies='[{
+                        "inline_policies":[
+                            {
+                                "name" : "fargate-tsk-exec-policy",
+                                "path": "policies/fargate-task-execution-policy.json"
+                            }
+                        ]
+                    }]'
+#task-role
+export tr_policies='[{
+                        "inline_policies":[
+                            {
+                                "name" : "fargate-tsk-policy",
+                                "path": "policies/fargate-task-policy.json"
+                            }
+                        ]
+                    }]'
+#lb
+export existing_alb_arn="arn:aws:elasticloadbalancing:us-east-1:307946647371:loadbalancer/app/non-prod-mtpe-alb-rt/b87b0b7c87338e9d"
+export existing_listener_arn="arn:aws:elasticloadbalancing:us-east-1:307946647371:listener/app/non-prod-mtpe-alb-rt/b87b0b7c87338e9d/d199fb35e38dc371"
+export security_group_id_for_existing_listener="sg-0e83d2e60a0757493"
+#rule
+export priority=104
+export rule_conditions='[
+                            {
+                                "host_headers": [
+                                    "stage-hello-world.merch-tech-pe-dev-nonprod.aws.fisv.cloud"
+                                ]
+                            }
+                        ]'
+#tg
+export tg_name_override="stage-hello-world-tg"
+export tg_port=9000
+export tg_health_check="/v1/healthcheck"
+#rte53
+export zone_id="Z0241457EE1P032VHVGN"
+export zone_name="merch-tech-pe-dev-nonprod.aws.fisv.cloud"
+export record_name="stage-hello-world.merch-tech-pe-dev-nonprod.aws.fisv.cloud"
+
+
+-------Description of env.sh file included variables:
+
+Below defined variables have vale which is corresponding to your AWS Account. Please reach to your Team Lead to get this value.
+
+VAULT_ROLE_ID="ENTER_YOUR_AWS_AC_VAULT_ROLE_ID"
+VAULT_SECRET_ID="ENTER_YOUR_AWS_AC_VAULT_SECRET_ID"
+VAULT_NAMESPACE="ENTER_YOUR_AWS_AC_VAULT_NAMESPACE"
+VAULT_ROLE="ENTER_YOUR_AWS_AC_VAULT_ROLE"
+
+Note: 1. Please do not change the variable name as these variable names used in util script to generate the AWS access credential.
+
+2. If you want to store above value in your GitLab project's CICD variable, Please feel free to do so and refer it as follow:
+
+ VAULT_ROLE_ID="${AC_XXX_VAULT_ROLE_ID}"
+
+Note: Above variables are not needed for MSTech Platform Engineering AWS account.
+
+ENV="stage" 
+
+ENV contains value of the application environment you want to provisioned to. this value is used as prefix of AWS resources name. 
+
+hello_world_reg_loc="glr" 
+
+Above variable  stores location of hello_world_reg where sample hello-world java17 based docker container image exposed to port 9000 has been stored.
+
+aws=means aws account's selected region should have java17_template_port9000 ecr has hw image with tag as java17_template_port9000 and latest. 
+glr=IAC app config project should have CI_REGISTRY_USER and CI_JOB_TOKEN CICD variable updated with authorized user of https://gitlab.onefiserv.net/mstechpe/iac/core-cdk repo.
+
+aws_region="us-east-1"
+
+aws_region contains region name of the aws account where resources is provisioned.
+
+aws_account=307946647371
+
+aws_account contains AWS Account Number where resources is provisioned.
+
+vpc='{
+"name" : "vpc",
+"id" : "vpc-09dbbd21666a59676"
+}'
+
+vpc contains "name" (can have any value) and "id" of AWS Account's vpc. This vpc is usually provisioned when App teams get the AWS account created. 
+
+auto_scaling='{
+"min_capacity": 1,
+"max_capacity": 4,
+"cpu_target_utilization": 70,
+"cpu_scale_in_cooldown": 300,
+"cpu_scale_out_cooldown": 300,
+"mem_target_utilization": 70,
+"mem_scale_in_cooldown": 300,
+"mem_scale_out_cooldown": 300
+}'
+
+auto_scaling contains setting of ecs service auto scaling. Please update the value as per your application needs.
+
+#task level variable
+
+task_memory_limit=8192
+
+task_cpu=2048
+
+Above contains memory and cpu for the ecs task . Please update the value as per your application needs.
+
+#container level variable
+
+ports='[9000]'
+
+ports contains list of ports your application needs to be exposed to. It should match the port mentioned in the application code and docker file of the application. 
+
+Ex: If application container image also have another jacocoagent.jar file and it starts when container starts and exposed via port 6300, then please mentioned the port as ports='[9000,6300]'
+
+memory=512
+cpu=1024
+environment_variables='[
+{"APP_ENV":"stage"},
+{"application_name":"hello-world"},
+{"created_by":"mukesh.kumar4@fiserv.com"}
+]'
+
+Above contains memory and cpu for the ecs task container . Please update the value as per your application needs.
+
+ingress='[{
+"type": "construct",
+"peer": "sg-0e83d2e60a0757493",
+"port": 9000
+}]'
+
+Above contains ingress rules of the security group attached with ecs service. In above rules Traffic is allowed from ALB as its sg id has been mentioned in peer .
+
+Example of two ingress rule in which 2nd rule allowed the traffic to ecs task from IP range 100.99.0.0/16.
+
+ingress='[
+{
+"type": "construct",
+"peer": "sg-0e83d2e60a0757493",
+"port": 9000
+},
+{
+"type": "ipsource",
+"peer": "100.99.0.0/16",
+"port": 6300 }
+ ]'
+
+#lg level variable
+
+subscription_filter_arn="arn:aws:logs:us-east-1:871681779858:destination:6f8c45cc-97d5-4fc6-9165-18fea6640d16"
+
+Above contains  aws region specific subscription filter arn provided by Splunk team to integrate the aws log group with Splunk for log retention.
+
+Here is list of all ars available for each region:
+
+us-east-1 : arn:aws:logs:us-east-1:871681779858:destination:6f8c45cc-97d5-4fc6-9165-18fea6640d16
+
+us-east-2: arn:aws:logs:us-east-2:871681779858:destination:a90a2873-9120-4832-87eb-aa9db540f8e4
+
+us-west-1: arn:aws:logs:us-west-1:871681779858:destination:cdb67ae0-5f60-4195-b527-959d76ef4234
+
+us-west-2: arn:aws:logs:us-west-2:871681779858:destination:3467d164-8930-4845-81d1-f509ef4e57a3
+
+#task-execution-role
+
+ter_policies='[{
+"inline_policies":[
+{
+"name" : "fargate-tsk-exec-policy",
+"path": "policies/fargate-task-execution-policy.json"
+}
+]
+}]'
+
+Above contains the policy name and policy json file location path for task execution role.
+
+#task-role
+
+tr_policies='[{
+"inline_policies":[
+{
+"name" : "fargate-tsk-policy",
+"path": "policies/fargate-task-policy.json"
+}
+]
+}]'
+
+Above contains the policy name and policy json file location path for task role.
+
+#Existing ALB
+ existing_alb_arn="arn:aws:elasticloadbalancing:us-east-1:307946647371:loadbalancer/app/non-prod-mtpe-alb-rt/b87b0b7c87338e9d"
+
+Above contains ALB  arn via which app's load will be balanced. 
+
+Note: It is recommended that ALB is created as part of standalone stack as same ALB is used to load-balanced multiple apps within a AWS account.
+
+Each Aws account usually need two type of ALBs minimum. 1st  ALB is placed in routable subnets (Public) and used to load-balance apps load which needs to be accessible from outside the VPC.
+
+2nd ALB  is placed in non-routable subnets(Private) and used to load-balance apps which should be accessible from other services within same VPC.existing_listener_arn="arn:aws:elasticloadbalancing:us-east-1:307946647371:listener/app/non-prod-mtpe-alb-rt/b87b0b7c87338e9d/d199fb35e38dc371"
+
+Above contains arn for the ALB listener
+security_group_id_for_existing_listener="sg-0e83d2e60a0757493"
+
+Above contains  ID of security group associated with ALB
+
+#ALB rule
+
+export priority=104
+
+Above contains the rule priority. Please check exiting ALB and need to choose the new rule priority for the rule if it is getting created first time. No need to change its value once created and trying to update other detail of the application.
+export rule_conditions='[
+{
+"host_headers": [
+"stage-hello-world.merch-tech-pe-dev-nonprod.aws.fisv.cloud"
+]
+}
+ ]'
+
+Above contains rule condition based on which traffic will be routed the the application's target group.
+
+#Target Group Name related variable
+tg_name_override="stage-hello-world-tg"
+
+Above variable is optional .
+
+Note: If it is not included in the env.sh file , please also delete below line from lb.json config file  
+
+           ---------       jsonfile--------------pic
+
+If you want to include this variable in env.sh file then above highlighted value should also be present.
+
+Its value should be given as "<env>-<app_name>-<tg>". 
+
+Sometime if app_name is too long then given target group name is not accepted and in that case we can shorten the <app_name> as per need.
+
+
+tg_port=9000
+
+Above contains the container exposed port for the application.
+
+In case of multiple container ports , we need to provision multiple target group.
+
+ tg_health_check="/v1/healthcheck"
+
+Above contains the Heath Check url for your application. Please update the value based on your application health check url.
+
+#Route 53
+zone_id="Z0241457EE1P032VHVGN"
+zone_name="merch-tech-pe-dev-nonprod.aws.fisv.cloud"
+
+Above contains the detail of Route 53 hosted zone on which record needs be be created. Based on your application need, please select the required hosted zone.
+record_name="stage-hello-world.merch-tech-pe-dev-nonprod.aws.fisv.cloud"
+
+Above contains the url by which your application will be accessible. It has two parts:
+
+1st past: stage-hello-world. 
+
+Please provide above value in format <env>-<app_name> or name is as per your app's user's preference. 
+
+2nd part: merch-tech-pe-dev-nonprod.aws.fisv.cloud 
+
+Above will be the same as zone_name variable value.
+
+
+
+
+
+
+
+
+iacconfigs---ecs
+
+1)))
+
+{
+    "704726041651":
+    {
+        "stack_id": "9000-hw",
+        "resource_prefix": "9000-hw",
+        "aws_region": "us-west-2",
+        "vpc":
+        {
+            "name" : "vpc",
+            "id" : "vpc-0fe0ccb4f6f842818"
+        },
+        "resources":[
+            {
+                "resource_type": "aws_ecs_fargate",
+                "resource_id": "cluster",
+                "services":[
+                    {
+                        "resource_id": "9000-svc",
+                        "security_group_id": "${9000-hw:sg-for-fargate-svc:sg_id}",
+                        "desired_count": 1,
+                        "vpc_subnets": [
+                            {
+                                "id": "subnet-0c784156beb8d2c0e",
+                                "zone": "us-west-2a"
+                            },
+                            {
+                                "id": "subnet-0e6c8fbcf8f60d7da",
+                                "zone": "us-west-2b"
+                            }
+                        ],
+                        "task_definition":
+                        {
+                            "task_role": "${9000-hw:task-role:arn}",
+                            "execution_role": "${9000-hw:task-execution-role:arn}",
+                            "memory_limit": 8192,
+                            "cpu": 2048,
+                            "containers":[
+                                {
+                                    "<-- Will Also be used as lb target -->": null,
+                                    "resource_id": "ctr-9000",
+                                    "name_override": "dev-test-9000",
+                                    "ecr_repo": "java17_template_port9000",
+                                    "<--use 'ports'...port is for backward compatibility": null,
+                                    "port":3000,
+                                    "ports":[3000,9000],
+                                    "memory":512,
+                                    "cpu": 1024,
+                                    "log_group": "${9000-hw:log-group:aws_resource}",
+                                    "environment_variables":[{"ENV_NAME":"dev"},{"fdc:uaid":"UAID-10302"},{"application_name":"test-9000-helloworld"},{"created_by":"gurminder.sidhu@fiserv.com"}]
+                                }
+                            ]
+                        },
+                        "auto_scaling":
+                        {
+                            "min_capacity": 1,
+                            "max_capacity": 4,
+                            "cpu_target_utilization": 70,
+                            "cpu_scale_in_cooldown": 300,
+                            "cpu_scale_out_cooldown": 300,
+                            "mem_target_utilization": 70,
+                            "mem_scale_in_cooldown": 300,
+                            "mem_scale_out_cooldown": 300
+                        }
+                    }
+                ]
+            },
+            {
+                "resource_type": "aws_ec2",
+                "resource_id": "sg-for-fargate-svc",
+                "allow_all_outbound": true,
+                "ingress":[
+                    {
+                        "type": "construct",
+                        "peer": "sg-0ed05ea439ab3c74b",
+                        "port": 3000
+                    }
+                ]
+            },
+            {
+                "resource_type": "aws_logs",
+                "resource_id": "log-group",
+                "subscription_filter_arn": "arn:aws:logs:us-west-2:871681779858:destination:3467d164-8930-4845-81d1-f509ef4e57a3"
+                
+            },
+            {
+                "resource_type": "aws_iam",
+                "resource_id": "task-execution-role",
+                "assume_role_principal": "ecs-tasks.amazonaws.com",
+                "policies":[
+                    {
+                        "inline_policies":[
+                            {
+                                "name" : "fargate-tsk-exec-policy",
+                                "path": "policies/fargate-task-execution-policy.json"
+                            }
+                        ]
+                    },
+                    {
+                        "managed_policy_arns":[
+                            "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+                        ]
+                    }
+                ]
+
+            },
+            {
+                "resource_type": "aws_iam",
+                "resource_id": "task-role",
+                "assume_role_principal": "ecs-tasks.amazonaws.com",
+                "policies":[
+                    {
+                        "inline_policies":[
+                            {
+                                "name" : "fargate-tsk-policy",
+                                "path": "policies/fargate-task-policy.json"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}
+
+2)))
+
+
+
+
+
