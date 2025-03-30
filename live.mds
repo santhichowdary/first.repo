@@ -217,3 +217,130 @@ Amazon Network Load Balancer (NLB) is designed to handle millions of requests pe
   ]
 }
 ```
+
+
+Secret Manager
+
+
+## AWS Secrets Manager Reference
+
+AWS Secrets Manager is a service within AWS that allows you to securely store, manage, and retrieve sensitive information like database credentials, API keys, and other secrets, enabling you to rotate them automatically and control access to them throughout their lifecycle, instead of hardcoding them directly into your applications, thus enhancing security by preventing accidental exposure of sensitive data.
+
+### Secret manager example
+```json
+
+{
+        "stack_id": "secret-stack",
+        "resource_prefix": "secret",
+        "aws_region": "us-west-2",
+       
+        "resources":[
+            {
+                "resource_type": "aws_secrets_manager",
+                "resource_id": "private-key-secret",
+                "<--name_override": "AmazonMSK_msk_admin",
+
+                "<--customer_managed_kms_key_arn-->": "arn:aws....",
+                "<--customer_managed_kms_key_arn": "${msk-secret-cmk:cmk:arn}",
+
+                "description": "Store Private Key",
+                "<-- secret_string_value generates a Plain Text secret value - not a Key/Pair Value" : null,
+                "secret_string_value": "",
+                
+                "<-- Use below for creating key/value pair secrets": null, 
+                "secret_string_template": "{\"private_key\": \"put value here\"}",
+                "generate_string_key": "password",
+                
+                "<--add below if replica key needed in dr region": null,
+                "add_replica_region": "us-east-1"
+            }
+        ]
+    }
+
+```
+
+
+ECS
+
+## aws_ecs reference
+
+Amazon Elastic Container Service (ECS) is a fully managed container orchestration service that makes it easy to deploy, manage, and scale containerized applications using Docker. ECS integrates seamlessly with other AWS services, providing a robust platform for running microservices and distributed applications.
+### ECS Example
+```json
+
+{
+  "stack_id": "test-ecs-stack",
+  "resource_prefix": "test-java",
+  "aws_region": "us-west-2",
+  "resources": [
+    {
+      "resource_type": "aws_ecs_cluster",
+      "resource_id": "cluster1",
+      "cluster_name": "my-test-cluster",
+      "tags": {
+        "env": "test",
+        "project": "java"
+      }
+    },
+    {
+      "resource_type": "aws_ecs_task_definition",
+      "resource_id": "taskdef1",
+      "family": "my-task-family",
+      "container_definitions": [
+        {
+          "name": "my-container",
+          "image": "123456789012.dkr.ecr.us-west-2.amazonaws.com/my-test-repository:latest",
+          "memory": 512,
+          "cpu": 256,
+          "essential": true,
+          "portMappings": [
+            {
+              "containerPort": 80,
+              "hostPort": 80
+            }
+          ],
+          "environment": [
+            {
+              "name": "ENV_VAR",
+              "value": "test"
+            }
+          ],
+          "logConfiguration": {
+            "logDriver": "awslogs",
+            "options": {
+              "awslogs-group": "/ecs/my-log-group",
+              "awslogs-region": "us-west-2",
+              "awslogs-stream-prefix": "ecs"
+            }
+          }
+        }
+      ],
+      "requires_compatibilities": ["FARGATE"],
+      "network_mode": "awsvpc",
+      "cpu": "256",
+      "memory": "512"
+    },
+    {
+      "resource_type": "aws_ecs_service",
+      "resource_id": "service1",
+      "service_name": "my-test-service",
+      "cluster": "cluster1",
+      "task_definition": "taskdef1",
+      "desired_count": 1,
+      "launch_type": "FARGATE",
+      "network_configuration": {
+        "awsvpc_configuration": {
+          "subnets": ["subnet-12345678"],
+          "security_groups": ["sg-12345678"],
+          "assign_public_ip": "ENABLED"
+        }
+      },
+      "tags": {
+        "env": "test",
+        "project": "java"
+      }
+    }
+  ]
+}
+
+```
