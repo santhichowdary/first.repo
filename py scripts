@@ -1737,3 +1737,338 @@ Amazon Elastic Container Service (ECS) is a fully managed container orchestratio
 }
 
 ```
+
+
+secret manager
+
+from constructs import Construct
+from typing import Any
+from aws_cdk import Tags
+from aws_cdk import aws_secretsmanager as _sm
+from aws_cdk import Resource as cdkResource
+from aws_cdk import SecretValue as _secretvalue
+from aws_resources.aws_kms import MyKMS as _kms
+
+import utils
+
+class MySecretsManager():
+    def __init__(self,scope: Construct,construct_id: str,config: dict,**kwargs) ->None:
+        super().__init__(**kwargs)
+        
+        self.scope: Construct = scope
+        self.construct_id: str = f'{construct_id}'
+        self.config:dict = config
+        self.created:bool = False
+        self.aws_resource: cdkResource = None
+        self.env: str = utils.get_environment()
+        self.region: str = utils.get_aws_region(scope)
+        
+    def Create(self) -> cdkResource:
+        if self.created:
+            return self
+        
+        if not self.config.get("update_secret",True):    
+            return self
+        
+        # Handle custom secret name
+        if self.config.get("name_override",False):    
+            self.secret_name = f'{self.config["name_override"]}'
+        else:
+            self.secret_name = f'{self.construct_id}-{self.config["resource_id"]}'
+        
+        generate_secret_string = None
+        if self.config.get("secret_string_template",False):
+            if self.config.get("secret_string_value",False):
+                raise Exception("Specify one of 'secret_string_template' or 'secret_string_value'")
+            generate_secret_string={
+                "secret_string_template": self.config["secret_string_template"],
+                #"secret_string_template": "{\"username\": \"prospectdb\"}",
+                "generate_string_key": self.config.get("generate_string_key",None),
+                "exclude_characters": self.config.get("exclude_characters"),
+                "password_length": self.config.get("password_length"),
+            }
+        secret_string_value = None
+        if self.config.get("secret_string_value",False):
+            if self.config.get("secret_string_template",False):
+                raise Exception("Specify one of 'secret_string_template' or 'secret_string_value'")
+            secret_string_value= self.config.get(secret_string_value)
+        
+        # Handle Encrption key
+        encryption_key = None
+        if self.config.get("customer_managed_kms_key_arn",False):
+            encryption_key= _kms.GetKmsForArn(
+                f'{self.construct_id}-{self.config["resource_id"]}-cmk',
+                self.scope,
+                self.config["customer_managed_kms_key_arn"]
+            )
+
+        secret = _sm.Secret(
+            self.scope, 
+            id= f'{self.construct_id}-{self.config["resource_id"]}',
+            secret_name= self.secret_name,
+            description= self.config.get("description",None),
+            #secret_object_value= self._get_secret_object_value(self.config.get("secret",None)),
+            generate_secret_string= generate_secret_string,
+            secret_string_value = secret_string_value,
+            encryption_key= encryption_key
+        )
+        
+        if self.config.get("add_replica_region",False):
+            secret.add_replica_region(self.config["add_replica_region"])
+            
+        self.aws_resource = secret
+        # Add Tags if specified
+        if self.config.get("tags",False):
+            for key,value in self.config["tags"].items():
+                Tags.of(self.aws_resource).add(key,value)
+
+        self.created = True
+        return self
+
+    # def _get_secret_object_value(self,secret_config: dict)->dict:
+    #     if secret_config is None:
+    #         return None
+        
+    
+    def GetAttribute(self,attr_name: str,key) -> Any:
+        if attr_name == "aws_resource":
+            return self.aws_resource
+        if attr_name == "arn":
+            return self.aws_resource.secret_arn
+
+
+
+s3
+
+from constructs import Construct
+from typing import Any
+from aws_resources.aws_kms import MyKMS as _kms
+from aws_resources.aws_sns import MySns as _mysns
+from aws_cdk import aws_sqs as _sqs
+
+from aws_cdk import aws_s3 as _s3
+from aws_cdk import aws_iam as _iam
+from aws_cdk import Resource as cdkResource
+from aws_cdk import aws_s3_notifications as _s3n
+from aws_cdk.aws_s3 import NotificationKeyFilter as _nkf
+from aws_cdk import aws_lambda as _lambda
+from aws_cdk import Tags,Duration
+from typing import Any,Sequence
+import utils,os,json
+import boto3
+
+class MyS3():
+    def __init__(self,scope: Construct,construct_id: str,config: dict,**kwargs) ->None:
+        super().__init__(**kwargs)
+        
+        self.scope: Construct = scope
+        self.construct_id: str = f'{construct_id}'
+        self.config:dict = config
+        self.created:bool = False
+        self.aws_resource: cdkResource = None
+        self.env: str = utils.get_environment()
+        self.region: str = utils.get_aws_region(scope)
+        
+    def Create(self) -> cdkResource:
+        if self.created:
+            return self
+        
+        if self.config.get("name_override",False):    
+            bucket_name = f'{self.config["name_override"]}'
+        else:
+            bucket_name = f'{self.scope.stackName}-{self.config["resource_id"]}'
+
+        if self._is_bucket_present(bucket_name):
+            bucket = _s3.Bucket.from_bucket_name(
+                self.scope,
+                id= f'{self.construct_id}-{self.config["resource_id"]}',
+                bucket_name=bucket_name
+            )
+        else:
+            kms_key = None
+            
+            if self.config.get("kms_key_arn",False):
+                #unique_id = self.config["kms_key_arn"].rpartition('/')[2]
+                kms_key= _kms.GetKmsForArn(
+                    f'{self.construct_id}-{self.config["resource_id"]}-kmsId',
+                    self.scope,
+                    self.config["kms_key_arn"]
+                )
+            
+            # Lifecycle rule
+            lifecycle_rules: _s3.LifecycleRule= None
+            if self.config.get("lifecycle_rule",False):
+                lc_rule_config= self.config["lifecycle_rule"]
+                lifecycle_rules=[_s3.LifecycleRule(
+                    id= lc_rule_config["name"],
+                    enabled= lc_rule_config.get("enabled",False),
+                    expiration= Duration.days(lc_rule_config["expiration"])
+                )]
+            
+            bucket = _s3.Bucket(
+                self.scope, 
+                id= f'{self.construct_id}-{self.config["resource_id"]}',
+                bucket_name=bucket_name,
+                versioned=self.config.get("versioned",None),
+                encryption_key= kms_key,
+                lifecycle_rules= lifecycle_rules
+            )
+        
+        ###  AT THIS POINT WE HAVE A BUCKET OBJECT - NEW OR EXISTING ####
+
+        # Enable Event Bridge notification for existing buckets as well if specified
+        if self.config.get("event_bridge_enabled",False):
+            bucket.enable_event_bridge_notification()
+
+        # Set Bucket Policy
+        if self.config.get("bucket_policy"):
+            #policy_file_path: str = os.environ['CI_PROJECT_DIR']
+            policy_file_path: str = self.scope.stack_path
+            policy_file_path = f'{policy_file_path}/{self.config["bucket_policy"]}' 
+            _s3.CfnBucketPolicy(
+                scope= self.scope,
+                id= f'{self.construct_id}-{self.config["resource_id"]}-policy',
+                bucket= bucket_name,
+                policy_document=self.GetPolicyDocumentForPolicyFile(
+                    policy_file_path= policy_file_path
+                )
+            )
+
+        # Add event destinations if specified
+        if self.config.get("event_destinations",False):
+            evt_dests = self.config["event_destinations"]
+
+            for evt_dest in evt_dests:
+                # Add Lambda destination
+                if evt_dest.get("lambda_arn"):
+                    if evt_dest.get("prefix"):
+                        prefix= evt_dest["prefix"]
+                    if evt_dest.get("suffix"):
+                        suffix= evt_dest["suffix"]
+
+                    bucket.add_event_notification(
+                        _s3.EventType.OBJECT_CREATED,
+                        _s3n.LambdaDestination(
+                            MyS3.GetLambdaForArn(
+                                construct_id= f'{self.construct_id}-{self.config["resource_id"]}-{evt_dest["id"]}-lambda-tgt',
+                                scope= self.scope,
+                                function_arn= evt_dest["lambda_arn"]
+                            )
+                        ),
+                        _s3.NotificationKeyFilter(
+                            prefix= prefix,
+                            suffix= suffix
+                        )
+                    )
+                # SNS Destination
+                if evt_dest.get("topic_arn"):
+                    if evt_dest.get("prefix"):
+                        prefix= evt_dest["prefix"]
+                    if evt_dest.get("suffix"):
+                        suffix= evt_dest["suffix"]
+
+                    bucket.add_event_notification(
+                        _s3.EventType.OBJECT_CREATED,
+                        _s3n.SnsDestination(
+                            _mysns.GetobjectforArn(
+                                construct_id= f'{self.construct_id}-{self.config["resource_id"]}-{evt_dest["id"]}-sns-tgt',
+                                scope= self.scope,
+                                topic_arn= evt_dest["topic_arn"]
+                            )
+                        ),
+                        _s3.NotificationKeyFilter(
+                            prefix= prefix,
+                            suffix= suffix
+                        )
+                    )
+                
+                # SQS Destination
+                if evt_dest.get("sqs_arn"):
+                    if evt_dest.get("prefix"):
+                        prefix= evt_dest["prefix"]
+                    if evt_dest.get("suffix"):
+                        suffix= evt_dest["suffix"]
+
+                    bucket.add_event_notification(
+                        _s3.EventType.OBJECT_CREATED,
+                        _s3n.SqsDestination(
+                            MyS3.GetSqsForArn(
+                                construct_id= f'{self.construct_id}-{self.config["resource_id"]}-{evt_dest["id"]}-sqs-tgt',
+                                scope= self.scope,
+                                dlq_arn= evt_dest["sqs_arn"]
+                            )
+                        ),
+                        _s3.NotificationKeyFilter(
+                            prefix= prefix,
+                            suffix= suffix
+                        )
+                    )
+        # Add Tags if specified
+        if self.config.get("tags",False):
+            for key,value in self.config["tags"].items():
+                Tags.of(bucket).add(key,value)
+
+        self.aws_resource = bucket
+
+        self.created = True
+        return self
+    
+    @staticmethod
+    def GetPolicyDocumentForPolicyFile(policy_file_path: str)->_iam.PolicyDocument:
+        statements: Sequence[_iam.PolicyStatement] = []
+        with open(policy_file_path, 'r') as policy_file:
+                        policy_json = json.load(policy_file)
+        for statement in policy_json["Statement"]:
+            statements.append(_iam.PolicyStatement.from_json(statement))
+                
+        return _iam.PolicyDocument(
+            statements= statements
+        ) 
+    @staticmethod
+    def GetLambdaForArn(construct_id: str, scope: Construct,function_arn: str)->_lambda.Function:
+        #unique_id = role_arn.rpartition('/')[2] # extract string after last '/'
+        return _lambda.Function.from_function_attributes(
+            scope=scope,
+            id=f'{construct_id}',
+            function_arn=function_arn,
+            same_environment=True
+        )
+    
+    def _is_bucket_present(self,bucket_name):
+        
+        try:
+            session = boto3.Session()
+            s3 = boto3.client("s3",region_name=f'{self.region}')
+            buckets = s3.list_buckets()['Buckets']
+            for bucket in buckets:
+                name= bucket['Name']
+                if bucket_name in name:
+                    return True
+        except Exception as err:
+            print(f'Info: {err}')
+            return False
+        return False
+    
+    @staticmethod
+    def GetSqsForArn(construct_id: str,scope: Construct,dlq_arn:str)->_sqs.Queue:
+        
+        return _sqs.Queue.from_queue_arn(
+            scope,
+            id=f'{construct_id}',
+            queue_arn=dlq_arn
+        )
+    
+    @staticmethod
+    def GetS3ObjectForName(construct_id: str, scope: Construct,bucket_name: str)->_s3.IBucket:
+        return _s3.Bucket.from_bucket_name(
+            scope, 
+            f'{construct_id}-{bucket_name}', 
+            bucket_name=bucket_name
+        )
+    def GetAttribute(self,attr_name: str,key) -> Any:
+        if attr_name == "arn":
+            return self.aws_resource.bucket_arn
+        if attr_name == "name":
+            return self.aws_resource.bucket_name
+        if attr_name == "aws_resource":
+            return self.aws_resource
