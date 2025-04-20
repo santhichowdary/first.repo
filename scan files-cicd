@@ -1,0 +1,473 @@
+###
+
+#
+# build_breaker_scan.yml
+#
+build_breaker_scan:
+  stage: build_breaker_scan
+  environment: $ENV
+  image: $FORTIFY_IMG
+  # image: fmk.nexus.onefiserv.net/fmk/ext-tools/fortify-22-2-0:FMK-02-23-23
+  #image: fmk.nexus.onefiserv.net/vendor/docker/fortifydocker/fortify-ci-tools:4.0.1-jdk-17
+  variables:
+    Application_name: $MY_FORTIFY_SSC_APP
+    Version_name: $MY_FORTIFY_SSC_PV
+    BUILD_BREAKER_PACKAGE_URL: $BUILD_BREAKER_PACKAGE_URL
+  script:
+   - curl -o buildbreaker.tar "$BUILD_BREAKER_PACKAGE_URL"
+   - tar -xvf buildbreaker.tar 
+   - chmod 777 build-breaker.sh
+   - ls -la
+   - ./build-breaker.sh "$Application_name" "$Version_name" "chandani.kumari@fiserv.com" "chandani.kumari@fiserv.com"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $BUILD_BREAKER == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $BUILD_BREAKER == "true"'
+
+
+
+
+
+#
+# fortify-scan.yml
+#
+fortify-scan-module1:
+  stage: fortify-scan-module1
+  environment: $ENV
+  #image: nexus.onefiserv.net:8082/guhsdo-u-docker-hosted/appsec/fortify-21.2.3:latest
+  image: $FORTIFY_IMG
+  variables:
+    FORTIFY_SCAN_TAG: "fortify" # name of tag
+    #FORTIFY_SCAN_ROOT: $CI_PROJECT_DIR/sales-regime        # folder to use as root folder for upload
+    FORTIFY_SCAN_ROOT: $CI_PROJECT_DIR # folder to use as root folder for upload
+    #BUILDID: "Catalyst"
+    SCANCENTRAL_BUILD_OPTS: "-bt none"
+    #SCANCENTRAL_BUILD_OPTS: "-b Catalyst"
+    # FORTIFY_SSC_URL and FORTIFY_SSC_TOKEN are expected as GitLab CI/CD Variables (masking recommended)
+    #FORTIFY_SSC_TOKEN: <to be defined>                     # CI token type generated in https://fortify.1dc.com/ssc/html/ssc/admin/tokens
+
+    #
+    # ---  fill these variables in app specific variables
+    #
+    #MY_VERSION: "$CI_COMMIT_SHORT_SHA"                     # suggestion: use UNIQUE_VERSION commit hash
+    MY_VERSION: "$CI_PIPELINE_IID"
+    #MY_FORTIFY_SSC_APP: "UAID-11219" # unique for the application
+    #MY_FORTIFY_SSC_PV: "1.0"
+    #
+  script:
+    - echo "Directory and files for Fortify Scans..."
+    - cd $CI_PROJECT_DIR/module1
+    - ls -la
+    - export SCANCENTRAL_LOG="$CI_PROJECT_DIR"
+    - export SCAN_OPTIONS="--log-file $CI_PROJECT_DIR/fortify.log --output-file $CI_PROJECT_DIR/fortify.fpr"
+    - export RC=0
+
+    # - scancentral arguments -o -targs "--build-label $MY_VERSION $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER -exclude '**/**/*.pfx'"  -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER -exclude '**/**/*.pfx'"
+    - echo "$FORTIFY_SSC_URL","$FORTIFY_SSC_TOKEN","$MY_FORTIFY_SSC_APP","$MY_FORTIFY_SSC_PV","$SCANCENTRAL_BUILD_OPTS","$SCAN_OPTIONS"
+    - scancentral -sscurl "$FORTIFY_SSC_URL" -ssctoken $FORTIFY_SSC_TOKEN start -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER " -targs "--build-label $MY_VERSION $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER " -exclude '**/**/*.pfx' -exclude '**/**/*.jks' -exclude 'settings.xml' -upload -application "$MY_FORTIFY_SSC_APP" -version $MY_FORTIFY_SSC_PV -uptoken "$FORTIFY_SSC_TOKEN" $SCANCENTRAL_BUILD_OPTS $SCAN_OPTIONS --save-package filesscanned.zip  2> scancentral.err  || RC=$?
+    - echo "result from scancentral - $RC"
+    - ls -lart $CI_PROJECT_DIR
+    # - cat $CI_PROJECT_DIR/scancentral.log
+    # - if [ -f "$CI_PROJECT_DIR/scancentral.log" ]; then cat $CI_PROJECT_DIR/scancentral.log; fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $FORTIFY_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $FORTIFY_SCAN == "true"'
+
+
+
+
+#
+# fortify-scan.yml
+#
+fortify-scan-module2:
+  stage: fortify-scan-module2
+  environment: $ENV
+  #image: nexus.onefiserv.net:8082/guhsdo-u-docker-hosted/appsec/fortify-21.2.3:latest
+  image: $FORTIFY_IMG
+  variables:
+    FORTIFY_SCAN_TAG: "fortify" # name of tag
+    #FORTIFY_SCAN_ROOT: $CI_PROJECT_DIR/sales-regime        # folder to use as root folder for upload
+    FORTIFY_SCAN_ROOT: $CI_PROJECT_DIR # folder to use as root folder for upload
+    #BUILDID: "Catalyst"
+    SCANCENTRAL_BUILD_OPTS: "-bt none"
+    #SCANCENTRAL_BUILD_OPTS: "-b Catalyst"
+    # FORTIFY_SSC_URL and FORTIFY_SSC_TOKEN are expected as GitLab CI/CD Variables (masking recommended)
+    #FORTIFY_SSC_TOKEN: <to be defined>                     # CI token type generated in https://fortify.1dc.com/ssc/html/ssc/admin/tokens
+
+    #
+    # ---  fill these variables in app specific variables
+    #
+    #MY_VERSION: "$CI_COMMIT_SHORT_SHA"                     # suggestion: use UNIQUE_VERSION commit hash
+    MY_VERSION: "$CI_PIPELINE_IID"
+    #MY_FORTIFY_SSC_APP: "UAID-11219" # unique for the application
+    #MY_FORTIFY_SSC_PV: "1.0"
+    #
+  script:
+    - echo "Directory and files for Fortify Scans..."
+    - cd $CI_PROJECT_DIR/module2
+    - ls -la
+    - export SCANCENTRAL_LOG="$CI_PROJECT_DIR"
+    - export SCAN_OPTIONS="--log-file $CI_PROJECT_DIR/fortify.log --output-file $CI_PROJECT_DIR/fortify.fpr"
+    - export RC=0
+
+    # - scancentral arguments -o -targs "--build-label $MY_VERSION $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER -exclude '**/**/*.pfx'"  -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER -exclude '**/**/*.pfx'"
+    - echo "$FORTIFY_SSC_URL","$FORTIFY_SSC_TOKEN","$MY_FORTIFY_SSC_APP","$MY_FORTIFY_SSC_PV","$SCANCENTRAL_BUILD_OPTS","$SCAN_OPTIONS"
+    - scancentral -sscurl "$FORTIFY_SSC_URL" -ssctoken $FORTIFY_SSC_TOKEN start -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER " -targs "--build-label $MY_VERSION $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER " -exclude '**/**/*.pfx' -exclude '**/**/*.jks' -exclude 'settings.xml' -upload -application "$MY_FORTIFY_SSC_APP" -version $MY_FORTIFY_SSC_PV -uptoken "$FORTIFY_SSC_TOKEN" $SCANCENTRAL_BUILD_OPTS $SCAN_OPTIONS --save-package filesscanned.zip  2> scancentral.err  || RC=$?
+    - echo "result from scancentral - $RC"
+    - ls -lart $CI_PROJECT_DIR
+    # - cat $CI_PROJECT_DIR/scancentral.log
+    # - if [ -f "$CI_PROJECT_DIR/scancentral.log" ]; then cat $CI_PROJECT_DIR/scancentral.log; fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $FORTIFY_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $FORTIFY_SCAN == "true"'
+
+
+
+
+#
+# fortify-scan.yml
+#
+fortify-scan:
+  stage: fortify-scan
+  environment: $ENV
+  #image: nexus.onefiserv.net:8082/guhsdo-u-docker-hosted/appsec/fortify-21.2.3:latest
+  image: $FORTIFY_IMG
+  variables:
+    FORTIFY_SCAN_TAG: "fortify" # name of tag
+    #FORTIFY_SCAN_ROOT: $CI_PROJECT_DIR/sales-regime        # folder to use as root folder for upload
+    FORTIFY_SCAN_ROOT: $CI_PROJECT_DIR/src # folder to use as root folder for upload
+    #BUILDID: "Catalyst"
+    SCANCENTRAL_BUILD_OPTS: "-bt none"
+    #SCANCENTRAL_BUILD_OPTS: "-b Catalyst"
+    # FORTIFY_SSC_URL and FORTIFY_SSC_TOKEN are expected as GitLab CI/CD Variables (masking recommended)
+    #FORTIFY_SSC_TOKEN: <to be defined>                     # CI token type generated in https://fortify.1dc.com/ssc/html/ssc/admin/tokens
+    #FORTIFY_SSC_URL: "https://fortify.1dc.com/ssc"
+    #
+    # ---  fill these variables in app specific variables
+    #
+    #MY_VERSION: "$CI_COMMIT_SHORT_SHA"                     # suggestion: use UNIQUE_VERSION commit hash
+    MY_VERSION: "$CI_PIPELINE_IID"
+    #MY_FORTIFY_SSC_APP: "UAID-11219" # unique for the application
+    #MY_FORTIFY_SSC_PV: "1.0"
+    #
+  script:
+    - echo "Begin fortify remote translation & scan"
+    - export SCANCENTRAL_LOG="$CI_PROJECT_DIR"
+    - export SCAN_OPTIONS="--log-file $CI_PROJECT_DIR/fortify.log --output-file $CI_PROJECT_DIR/fortify.fpr"
+    - export RC=0
+  #  - scancentral arguments -o -targs "--build-label $MY_VERSION $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER -exclude '**/**/*.jks'" -exclude '**/**/*.pfx' -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER -exclude '**/**/*.jks'" 
+    - echo "$FORTIFY_SSC_URL","$FORTIFY_SSC_TOKEN","$MY_FORTIFY_SSC_APP","$MY_FORTIFY_SSC_PV","$SCANCENTRAL_BUILD_OPTS","$SCAN_OPTIONS"
+    - scancentral -sscurl "$FORTIFY_SSC_URL" -ssctoken $FORTIFY_SSC_TOKEN start -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER " -targs "--build-label $MY_VERSION $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER " -exclude '**/**/*.pfx' -exclude '**/**/*.jks' -exclude 'settings.xml' -upload -application "$MY_FORTIFY_SSC_APP" -version $MY_FORTIFY_SSC_PV -uptoken "$FORTIFY_SSC_TOKEN" $SCANCENTRAL_BUILD_OPTS $SCAN_OPTIONS --save-package filesscanned.zip  2> scancentral.err  || RC=$?
+
+    - echo "result from scancentral - $RC"
+    - ls -lart $CI_PROJECT_DIR
+    - cat $CI_PROJECT_DIR/scancentral.err
+    - if [ -f "$CI_PROJECT_DIR/scancentral.log" ]; then cat $CI_PROJECT_DIR/scancentral.log; fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $FORTIFY_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $FORTIFY_SCAN == "true"'
+
+
+
+
+
+
+#
+# sonatype_lifecycle_scan.yml
+# 
+sonatype_lifecycle_scan:
+  stage: lifecycle_scan
+  image: $SONATYPE_IMG
+  environment: $ENV
+  variables:
+    LIFECYCLE_USER: $NEXUS_IQ_USERNAME
+    LIFECYCLE_PASSWORD: $NEXUS_IQ_PASSWORD
+    NEXUS_IQ_URL: $NEXUS_IQ_URL
+    MY_VERSION: $CI_COMMIT_SHORT_SHA
+    MY_LIFECYCLE_SSC_APP_ID: $MY_LIFECYCLE_SSC_APP_ID
+    PATH_TO_JAR_OR_ZIP: $CI_PROJECT_DIR
+  script:
+    - echo "prepare for scan"
+    - echo "Pushing Artifact to sonatype"
+    - export RC=0  
+    - /sonatype/evaluate -i "$MY_LIFECYCLE_SSC_APP_ID" -s "$NEXUS_IQ_URL" -a $LIFECYCLE_USER:$LIFECYCLE_PASSWORD -t Release "$PATH_TO_JAR_OR_ZIP" -r lifecycle-results.json || RC=$?
+    - |
+      if [ "$RC" != "0" ]
+      then
+        echo "ERROR - Lifecycle returns $RC"
+        echo "Lifecycle command execution failed"
+        echo "----------------------------- will exit with $RC"
+        exit $RC
+      else
+        echo "Lifecycle command successfull"
+      fi
+ 
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $LIFECYCLE_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $LIFECYCLE_SCAN == "true"'
+
+
+
+
+
+#
+# sonatype_lifecycle_scan.yml
+# 
+#
+# sonatype_lifecycle_scan.yml
+# Please replace module1/MODULE1 as per app name
+sonatype_lifecycle_scan_module1:
+  stage: sonatype_lifecycle_scan_module1
+  image: $SONATYPE_IMG
+  variables:
+    LIFECYCLE_USER: $NEXUS_IQ_USERNAME
+    LIFECYCLE_PASSWORD: $NEXUS_IQ_PASSWORD
+    NEXUS_IQ_URL: $NEXUS_IQ_URL
+    MY_VERSION: $CI_COMMIT_SHORT_SHA
+    MY_LIFECYCLE_SSC_APP_ID_MODULE1: $MY_LIFECYCLE_SSC_MODULE1_APP_ID
+    PATH_TO_JAR_OR_ZIP: $CI_PROJECT_DIR/module1
+  script:
+    - echo "prepare for scan"
+    - echo "Pushing Artifact to sonatype"
+    - export RC=0  
+    - echo "$MY_LIFECYCLE_SSC_APP_ID_MODULE1"
+    - /sonatype/evaluate -i "$MY_LIFECYCLE_SSC_APP_ID_MODULE1" -s "$NEXUS_IQ_URL" -a $LIFECYCLE_USER:$LIFECYCLE_PASSWORD -t Release "$PATH_TO_JAR_OR_ZIP" -r lifecycle-results.json || RC=$?
+    - |
+      if [ "$RC" != "0" ]
+      then
+        echo "ERROR - Lifecycle returns $RC"
+        echo "Lifecycle command execution failed"
+        echo "----------------------------- will exit with $RC"
+        exit $RC
+      else
+        echo "Lifecycle command successfull"
+      fi
+ 
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $LIFECYCLE_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $LIFECYCLE_SCAN == "true"'
+
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/*
+    expire_in: 30 mins
+
+
+
+
+
+
+
+#
+# sonatype_lifecycle_scan.yml
+# 
+#
+# sonatype_lifecycle_scan.yml
+# Please replace module2/MODULE2 as per app name
+
+sonatype_lifecycle_scan_module2:
+  stage: sonatype_lifecycle_scan_module2
+  image: $SONATYPE_IMG
+  variables:
+    LIFECYCLE_USER: $NEXUS_IQ_USERNAME
+    LIFECYCLE_PASSWORD: $NEXUS_IQ_PASSWORD
+    NEXUS_IQ_URL: $NEXUS_IQ_URL
+    MY_VERSION: $CI_COMMIT_SHORT_SHA
+    MY_LIFECYCLE_SSC_APP_ID_MODULE2: $MY_LIFECYCLE_SSC_MODULE2_APP_ID
+    PATH_TO_JAR_OR_ZIP: $CI_PROJECT_DIR/module1
+  script:
+    - echo "prepare for scan"
+    - echo "Pushing Artifact to sonatype"
+    - export RC=0  
+    - echo "$MY_LIFECYCLE_SSC_APP_ID_MODULE2"
+    - /sonatype/evaluate -i "$MY_LIFECYCLE_SSC_APP_ID_MODULE2" -s "$NEXUS_IQ_URL" -a $LIFECYCLE_USER:$LIFECYCLE_PASSWORD -t Release "$PATH_TO_JAR_OR_ZIP" -r lifecycle-results.json || RC=$?
+    - |
+      if [ "$RC" != "0" ]
+      then
+        echo "ERROR - Lifecycle returns $RC"
+        echo "Lifecycle command execution failed"
+        echo "----------------------------- will exit with $RC"
+        exit $RC
+      else
+        echo "Lifecycle command successfull"
+      fi
+ 
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $LIFECYCLE_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $LIFECYCLE_SCAN == "true"'
+
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/*
+    expire_in: 30 mins
+
+
+
+
+
+
+#
+# webinspect_scan.yml
+#
+webinspect_scan:
+  stage: webinspect_scan
+  environment: $ENV
+  image: $FORTIFY_IMG
+  # image: fmk.nexus.onefiserv.net/fmk/ext-tools/fortify-22-2-0:FMK-02-23-23
+  #image: fmk.nexus.onefiserv.net/vendor/docker/fortifydocker/fortify-ci-tools:4.0.1-jdk-17
+  variables:
+    SCANCENTRALCTRL_TOKEN: $SCANCENTRALCTRL_TOKEN
+    CICD_IDENTIFIER: $CICD_IDENTIFIER
+    WEBINSPECT_PACKAGE_URL: $WEBINSPECT_PACKAGE_URL
+  script:
+    - curl -o webinspect.tar "$WEBINSPECT_PACKAGE_URL"
+    - tar -xvf webinspect.tar
+    - chmod 755 DAST_start_scan.sh
+    - ./DAST_start_scan.sh "${SCANCENTRALCTRL_TOKEN}" "${CICD_IDENTIFIER}"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $WEBINSPECT_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $WEBINSPECT_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $WEBINSPECT_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $WEBINSPECT_SCAN == "true"'
+
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/*
+    expire_in: 30 mins
+
+
+
+
+
+
+
+
+CIIIIIIIIIIIIIIIIIIIIIIIIIIIII PIPne
+
+
+
+#
+# .gitlab-ci.yml (ECR)
+#
+variables:
+  # images for stages
+  #
+  #### java 11 ###
+  #JAVA_IMG: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/java/java11-mvn3.8-nodejs16:latest"
+  #
+  #### java 17 ###
+  #JAVA_IMG: "nexus.onefiserv.net:8091/vendor/redhat-public/ubi8/openjdk-17:1.14"
+  #
+  #DOCKER_DIND_BASE: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/docker/docker:20.10.16-dind-fiserv-3"
+  AWSCLI_IMG: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/python/python3.8-awscli-terraform"
+  # docker variables - required to set for docker env
+  DOCKER_DRIVER: overlay2
+  DOCKER_HOST: tcp://docker:2376/
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_TLS_VERIFY: 0
+  DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+  #
+  # IMAGE_TAGS: "$CI_PIPELINE_IID"
+  # IMAGE_TAGS: "latest"
+  #
+
+stages:
+  - build_breaker_scan
+  - fortify-scan
+  - build-jar
+  - build-jar-ui
+  - lifecycle_scan
+  - build-docker-image
+  - deploy-image-2fargate
+  - webinspect_scan
+
+
+include:
+  #- component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build-jar@main
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build-jar@create-basic-folders
+    inputs:
+      JOBNAME: build-jar
+      STAGE: build-jar
+      PLATFORM: AWS_ECS
+      IMAGE: $JAVA_IMG
+      #NEEDS: []
+      #DEPENDENCIES: []
+      ARTIFACT_FOLDER: [$CI_PROJECT_DIR/target/*]
+  #- component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build-jar@create-basic-folders
+  #  inputs:
+  #    JOBNAME: build-jar-ui
+  #    STAGE: build-jar-ui
+  #    #NEEDS: [job: build-jar]
+  #- component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build-docker-image@main
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build-docker-image@create-basic-folders
+    inputs:
+      JOBNAME: build-docker-image
+      STAGE: build-docker-image
+      PLATFORM: AWS_ECS
+      IMAGE: $DOCKER_DIND_BASE
+      #PACKAGES: (target/first target/second target/third)
+      NEEDS: [job: build-jar]
+      DEPENDENCIES: [build-jar]
+      ARTIFACT_FOLDER: [$CI_PROJECT_DIR/*] 
+  #- component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/deploy-image-2fargate@main
+  #- component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/deploy-image-2fargate@create-basic-folders
+  #  inputs:
+  #    JOBNAME: deploy-image-2fargate
+  #    STAGE: deploy-image-2fargate
+  #    NEEDS: [job: build-docker-image]
+  #    DEPENDENCIES: [build-docker-image]
+  #    PACKAGES: (somepackage somewhere)
+  #    SERVICES: (someservices something)
+  #    S3NAME: somes3
+
+
+
+DOCKER FIEL--------------------------------------
+
+
+
+#### java 11 ###
+# FROM nexus.onefiserv.net:8091/vendor/docker/amazoncorretto:11
+#
+#### java 17 ###
+#FROM nexus.onefiserv.net:8091/vendor/redhat-public/ubi8/openjdk-17:1.14
+#FROM fmk.nexus.onefiserv.net/fmk/java/openjdk17-jre:FMK-02-20-23
+
+ARG JRE_IMG
+#ENV DCKR_IMG=$JRE_IMG
+FROM ${JRE_IMG}
+RUN echo "Using JRE Image: $JRE_IMG"
+
+#DevOps Code starts
+ARG CICD_INFO
+ENV GBS_CICD_INFO=$CICD_INFO
+RUN echo $GBS_CICD_INFO
+#DevOps code ends
+
+#
+#
+# https://stackoverflow.com/questions/38899977/how-do-i-declare-multiple-maintainers-in-my-dockerfile
+# MAINTAINER Behrooz
+#
+LABEL authors="DL-NA-GBSTech-DevOps@fiserv.com"
+EXPOSE 9000
+#
+USER 0
+RUN chmod -R 777 /opt
+RUN mkdir -p /opt/docker
+USER 1001
+# To be replaced with actual application jar file
+ADD ./target/SpringbootHelloworld-0.0.1-SNAPSHOT.jar /opt/docker
+#The jar file needs to be replaced with application jar file
+ENTRYPOINT ["java","-cp", "/opt/docker/*", "-jar", "/opt/docker/SpringbootHelloworld-0.0.1-SNAPSHOT.jar"]
