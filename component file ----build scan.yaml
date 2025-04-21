@@ -1,0 +1,178 @@
+component file ----build scan 
+
+# Define the job using a dynamic name provided via inputs
+$[[ inputs.JOBNAME ]]:
+  # Specify the stage in which this job will run
+  stage: $[[ inputs.STAGE ]]
+  
+  # Define the environment for the job (e.g., dev, qa, prod)
+  environment: $[[ inputs.ENV ]]
+  
+  # Use a Docker image specified via inputs
+  image: $[[ inputs.IMAGE ]]
+  
+  # Set environment variables for the job
+  variables:
+    Application_name: $[[ inputs.MY_FORTIFY_SSC_APP ]]
+    Version_name: $[[ inputs.MY_FORTIFY_SSC_PV ]]
+    BUILD_BREAKER_PACKAGE_URL: $[[ inputs.BUILD_BREAKER_PACKAGE_URL ]]
+  
+  # Define the script that will be executed in the job
+  script:
+    # Download the build breaker package
+    - curl -o buildbreaker.tar "$BUILD_BREAKER_PACKAGE_URL"
+    
+    # Extract the downloaded package
+    - tar -xvf buildbreaker.tar 
+    
+    # Make the script executable
+    - chmod 777 build-breaker.sh
+    
+    # List the contents of the current directory (for debugging)
+    - ls -la
+    
+    # Execute the build breaker script with the provided parameters
+    - ./build-breaker.sh "$Application_name" "$Version_name" "chandani.kumari@fiserv.com" "chandani.kumari@fiserv.com"
+  
+  # Define rules to control when this job should run
+  rules:
+    # Run the job if the pipeline is triggered by a schedule and the BUILD_BREAKER variable is set to "true"
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $BUILD_BREAKER == "true"'
+    
+    # Run the job if the pipeline is triggered by an API call and the BUILD_BREAKER variable is set to "true"
+    - if: '$CI_PIPELINE_SOURCE == "api" && $BUILD_BREAKER == "true"'
+
+
+-------------------------------------------------
+
+
+
+ci yaml
+
+# Define the stages of the pipeline
+stages:
+  - build
+  - build_breaker_scan
+  # Add other stages as needed
+
+# Set global variables for the pipeline
+variables:
+  BUILD_BREAKER: "true"  # Enable the build breaker job
+  ENV: "dev"             # Set the environment (e.g., dev, qa, prod)
+  FORTIFY_IMG: "fmk.nexus.onefiserv.net/fmk/ext-tools/fortify-22-2-0:FMK-02-23-23"  # Docker image for Fortify
+  MY_FORTIFY_SSC_APP: "my-sample-app"  # Application name for Fortify
+  MY_FORTIFY_SSC_PV: "1.0.0"          # Application version for Fortify
+  BUILD_BREAKER_PACKAGE_URL: "https://example.com/buildbreaker.tar"  # URL to the build breaker package
+
+# Include the build-breaker-scan component
+include:
+  - component: "$CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build-breaker-scan@main"
+    inputs:
+      JOBNAME: build_breaker_scan
+      STAGE: build_breaker_scan
+      ENV: $ENV
+      IMAGE: $FORTIFY_IMG
+      MY_FORTIFY_SSC_APP: $MY_FORTIFY_SSC_APP
+      MY_FORTIFY_SSC_PV: $MY_FORTIFY_SSC_PV
+      BUILD_BREAKER_PACKAGE_URL: $BUILD_BREAKER_PACKAGE_URL
+
+# You can include other components like build-jar, build-docker-image, etc., similarly
+
+-----------------------------
+
+fortify module-1
+
+# Fortify Scan Component
+$[[ inputs.JOBNAME ]]:
+  stage: $[[ inputs.STAGE ]]
+  environment: $[[ inputs.ENV ]]
+  image: $[[ inputs.IMAGE ]]
+  variables:
+    FORTIFY_SCAN_TAG: "fortify"
+    FORTIFY_SCAN_ROOT: $CI_PROJECT_DIR
+    SCANCENTRAL_BUILD_OPTS: "-bt none"
+    MY_VERSION: "$CI_PIPELINE_IID"
+    Application_name: $[[ inputs.MY_FORTIFY_SSC_APP ]]
+    Version_name: $[[ inputs.MY_FORTIFY_SSC_PV ]]
+  script:
+    - echo "Starting Fortify scan in directory: $CI_PROJECT_DIR/$[[ inputs.MODULE_PATH ]]"
+    - cd $CI_PROJECT_DIR/$[[ inputs.MODULE_PATH ]]
+    - ls -la
+    - export SCANCENTRAL_LOG="$CI_PROJECT_DIR"
+    - export SCAN_OPTIONS="--log-file $CI_PROJECT_DIR/fortify.log --output-file $CI_PROJECT_DIR/fortify.fpr"
+    - export RC=0
+    - echo "Fortify SSC URL: $FORTIFY_SSC_URL"
+    - echo "Application Name: $Application_name"
+    - echo "Version Name: $Version_name"
+    - scancentral -sscurl "$FORTIFY_SSC_URL" -ssctoken "$FORTIFY_SSC_TOKEN" start \
+        -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER" \
+        -targs "--build-label $MY_VERSION $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER" \
+        -exclude '**/**/*.pfx' -exclude '**/**/*.jks' -exclude 'settings.xml' \
+        -upload -application "$Application_name" -version "$Version_name" \
+        -uptoken "$FORTIFY_SSC_TOKEN" $SCANCENTRAL_BUILD_OPTS $SCAN_OPTIONS \
+        --save-package filesscanned.zip 2> scancentral.err || RC=$?
+    - echo "Result from scancentral: $RC"
+    - ls -lart $CI_PROJECT_DIR
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME =~ /^main/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME !~ /^Release.*/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $FORTIFY_SCAN == "true"'
+
+
+
+
+-----------------------------------------
+
+sonatype
+
+- component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/sonatype-lifecycle-scan@main  # Ensure this path is correct
+    inputs:
+      JOBNAME: lifecycle_scan
+      STAGE: lifecycle_scan
+      IMAGE: $SONATYPE_IMG  # Ensure this image is defined and valid
+      NEXUS_IQ_USERNAME: $NEXUS_IQ_USERNAME  # Ensure this variable is set
+      NEXUS_IQ_PASSWORD: $NEXUS_IQ_PASSWORD  # Ensure this variable is set
+      NEXUS_IQ_URL: $NEXUS_IQ_URL  # Ensure this variable is set
+      MY_LIFECYCLE_SSC_APP_ID: $MY_LIFECYCLE_SSC_APP_ID  # Ensure this variable is set
+      PATH_TO_JAR_OR_ZIP: $CI_PROJECT_DIR  # Artifact location to be scanned
+      LIFECYCLE_SCAN: "true"  # Enabling the scan based on your condition
+
+
+
+      ----------   CI yaml
+
+      stages:
+  - build_breaker_scan
+  - fortify-scan
+  - build-jar
+  - build-jar-ui
+  - lifecycle_scan   # Ensure this stage is added to the pipeline
+  - build-docker-image
+  - deploy-image-2fargate
+  - webinspect_scan
+
+include:
+  # Other components
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build-jar@create-basic-folders
+    inputs:
+      JOBNAME: build-jar
+      STAGE: build-jar
+      PLATFORM: AWS_ECS
+      IMAGE: $JAVA_IMG
+      ARTIFACT_FOLDER: [$CI_PROJECT_DIR/target/*]
+  
+  # Adding the Sonatype Lifecycle Scan component
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/sonatype-lifecycle-scan@main  # Replace with the correct path if necessary
+    inputs:
+      JOBNAME: lifecycle_scan  # The job name for the lifecycle scan
+      STAGE: lifecycle_scan  # The stage in which it will run
+      IMAGE: $SONATYPE_IMG  # Use the Sonatype image
+      NEXUS_IQ_USERNAME: $NEXUS_IQ_USERNAME  # Nexus IQ username (set as an environment variable or in GitLab CI/CD settings)
+      NEXUS_IQ_PASSWORD: $NEXUS_IQ_PASSWORD  # Nexus IQ password (set as an environment variable or in GitLab CI/CD settings)
+      NEXUS_IQ_URL: $NEXUS_IQ_URL  # Nexus IQ URL (set as an environment variable or in GitLab CI/CD settings)
+      MY_LIFECYCLE_SSC_APP_ID: $MY_LIFECYCLE_SSC_APP_ID  # The application ID for the lifecycle scan (set in GitLab CI/CD settings)
+      PATH_TO_JAR_OR_ZIP: $CI_PROJECT_DIR  # Path to the artifact to scan
+      LIFECYCLE_SCAN: "true"  # Optional flag to enable the scan (can be controlled based on conditions)
+
+
