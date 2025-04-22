@@ -1,0 +1,420 @@
+#
+# build_breaker_scan.yml
+#
+build_breaker_scan:
+  stage: build_breaker_scan
+  environment: $ENV
+  image: $FORTIFY_IMG
+  variables:
+    Application_name: $MY_FORTIFY_SSC_APP
+    Version_name: $MY_FORTIFY_SSC_PV
+    BUILD_BREAKER_PACKAGE_URL: $BUILD_BREAKER_PACKAGE_URL
+  script:
+   - curl -o buildbreaker.tar "$BUILD_BREAKER_PACKAGE_URL"
+   - tar -xvf buildbreaker.tar 
+   - chmod 777 build-breaker.sh
+   - ls -la
+   - ./build-breaker.sh "$Application_name" "$Version_name" "$AUTHENTICATED_USER_EMAIL" "$ON_BEHALF_OF_EMAIL"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $BUILD_BREAKER == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $BUILD_BREAKER == "true"'
+
+
+
+
+#
+# fortify-scan.yml
+#
+fortify-scan-service:
+  stage: fortify-scan
+  environment: $ENV
+  #image: nexus.onefiserv.net:8082/guhsdo-u-docker-hosted/appsec/fortify-21.2.3:latest
+  image: $FORTIFY_IMG
+  variables:
+    FORTIFY_SCAN_TAG: "fortify" # name of tag
+    #FORTIFY_SCAN_ROOT: $CI_PROJECT_DIR/sales-regime        # folder to use as root folder for upload
+    FORTIFY_SCAN_ROOT: $CI_PROJECT_DIR # folder to use as root folder for upload
+    #BUILDID: "Catalyst"
+    SCANCENTRAL_BUILD_OPTS: "-bt none"
+    #SCANCENTRAL_BUILD_OPTS: "-b Catalyst"
+    # FORTIFY_SSC_URL and FORTIFY_SSC_TOKEN are expected as GitLab CI/CD Variables (masking recommended)
+    #FORTIFY_SSC_TOKEN: <to be defined>                     # CI token type generated in https://fortify.1dc.com/ssc/html/ssc/admin/tokens
+    #FORTIFY_SSC_URL: "https://fortify.1dc.com/ssc"
+    #
+    # ---  fill these variables in app specific variables
+    #
+    #MY_VERSION: "$CI_COMMIT_SHORT_SHA"                     # suggestion: use UNIQUE_VERSION commit hash
+    MY_VERSION: "$CI_PIPELINE_IID"
+    #MY_FORTIFY_SSC_APP: "UAID-11219" # unique for the application
+    #MY_FORTIFY_SSC_PV: "1.0"
+    #
+  script:
+    - echo "Begin fortify remote translation & scan"
+    - export SCANCENTRAL_LOG="$CI_PROJECT_DIR"
+    - export SCAN_OPTIONS="--log-file $CI_PROJECT_DIR/fortify.log --output-file $CI_PROJECT_DIR/fortify.fpr"
+    - export RC=0
+    - cd $CI_PROJECT_DIR/dataimportmaintenanceservice
+  #  - scancentral arguments -o -targs "--build-label $MY_VERSION $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER -exclude '**/**/*.jks'" -exclude '**/**/*.pfx' -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER -exclude '**/**/*.jks'" 
+    - echo "$FORTIFY_SSC_URL","$FORTIFY_SSC_TOKEN","$MY_FORTIFY_SSC_APP","$MY_FORTIFY_SSC_PV","$SCANCENTRAL_BUILD_OPTS","$SCAN_OPTIONS"
+    - scancentral -sscurl "$FORTIFY_SSC_URL" -ssctoken $FORTIFY_SSC_TOKEN start -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER " -targs "--build-label $MY_VERSION $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER " -exclude '**/**/*.pfx' -exclude '**/**/*.jks' -exclude 'settings.xml' -upload -application "$MY_FORTIFY_SSC_APP" -version $MY_FORTIFY_SSC_PV -uptoken "$FORTIFY_SSC_TOKEN" $SCANCENTRAL_BUILD_OPTS $SCAN_OPTIONS --save-package filesscanned.zip  2> scancentral.err  || RC=$?
+    - echo "result from scancentral - $RC"
+    - ls -lart $CI_PROJECT_DIR
+    - if [ -f "$CI_PROJECT_DIR/scancentral.log" ]; then cat $CI_PROJECT_DIR/scancentral.log; fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $FORTIFY_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $FORTIFY_SCAN == "true"'
+
+fortify-scan-ui:
+  stage: fortify-scan
+  environment: $ENV
+  #image: nexus.onefiserv.net:8082/guhsdo-u-docker-hosted/appsec/fortify-21.2.3:latest
+  image: $FORTIFY_IMG
+  variables:
+    FORTIFY_SCAN_TAG: "fortify" # name of tag
+    #FORTIFY_SCAN_ROOT: $CI_PROJECT_DIR/sales-regime        # folder to use as root folder for upload
+    FORTIFY_SCAN_ROOT: $CI_PROJECT_DIR # folder to use as root folder for upload
+    #BUILDID: "Catalyst"
+    SCANCENTRAL_BUILD_OPTS: "-bt none"
+    #SCANCENTRAL_BUILD_OPTS: "-b Catalyst"
+    # FORTIFY_SSC_URL and FORTIFY_SSC_TOKEN are expected as GitLab CI/CD Variables (masking recommended)
+    #FORTIFY_SSC_TOKEN: <to be defined>                     # CI token type generated in https://fortify.1dc.com/ssc/html/ssc/admin/tokens
+    #FORTIFY_SSC_URL: "https://fortify.1dc.com/ssc"
+    #
+    # ---  fill these variables in app specific variables
+    #
+    #MY_VERSION: "$CI_COMMIT_SHORT_SHA"                     # suggestion: use UNIQUE_VERSION commit hash
+    MY_VERSION: "$CI_PIPELINE_IID"
+    #MY_FORTIFY_SSC_APP: "UAID-11219" # unique for the application
+    #MY_FORTIFY_SSC_PV: "1.0"
+    #
+  script:
+    - echo "Begin fortify remote translation & scan"
+    - export SCANCENTRAL_LOG="$CI_PROJECT_DIR"
+    - export SCAN_OPTIONS="--log-file $CI_PROJECT_DIR/fortify.log --output-file $CI_PROJECT_DIR/fortify.fpr"
+    - export RC=0
+    - cd $CI_PROJECT_DIR/dataimportmaintenanceui
+  #  - scancentral arguments -o -targs "--build-label $MY_VERSION $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER -exclude '**/**/*.jks'" -exclude '**/**/*.pfx' -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER -exclude '**/**/*.jks'" 
+    - echo "$FORTIFY_SSC_URL","$FORTIFY_SSC_TOKEN","$MY_FORTIFY_SSC_APP","$MY_FORTIFY_SSC_PV1","$SCANCENTRAL_BUILD_OPTS","$SCAN_OPTIONS"
+    - scancentral -sscurl "$FORTIFY_SSC_URL" -ssctoken $FORTIFY_SSC_TOKEN start -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER " -targs "--build-label $MY_VERSION $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER " -exclude 'settings.xml' -upload -application "$MY_FORTIFY_SSC_APP" -version $MY_FORTIFY_SSC_PV1 -uptoken "$FORTIFY_SSC_TOKEN" $SCANCENTRAL_BUILD_OPTS $SCAN_OPTIONS --save-package filesscanned.zip  2> scancentral.err  || RC=$?
+    - echo "result from scancentral - $RC"
+    - ls -lart $CI_PROJECT_DIR
+    - if [ -f "$CI_PROJECT_DIR/scancentral.log" ]; then cat $CI_PROJECT_DIR/scancentral.log; fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $FORTIFY_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $FORTIFY_SCAN == "true"'
+
+------------------------------
+#
+# sonatype_lifecycle_scan.yml
+# 
+sonatype_lifecycle_scan_service:
+  stage: sonatype_lifecycle_scan
+  image: $SONATYPE_IMG
+  environment: $ENV
+  variables:
+    LIFECYCLE_USER: $NEXUS_IQ_USERNAME
+    LIFECYCLE_PASSWORD: $NEXUS_IQ_PASSWORD
+    NEXUS_IQ_URL: $NEXUS_IQ_URL
+    MY_VERSION: $CI_COMMIT_SHORT_SHA
+    MY_LIFECYCLE_SSC_APP_ID: $MY_LIFECYCLE_SSC_APP_ID
+    PATH_TO_JAR_OR_ZIP: $CI_PROJECT_DIR/dataimportmaintenanceservice
+  script:
+    - echo "prepare for scan"
+    - echo "Pushing Artifact to sonatype"
+    - export RC=0  
+    - /sonatype/evaluate -i "$MY_LIFECYCLE_SSC_APP_ID" -s "$NEXUS_IQ_URL" -a $LIFECYCLE_USER:$LIFECYCLE_PASSWORD -t Release "$PATH_TO_JAR_OR_ZIP" -r lifecycle-results.json || RC=$?
+    - |
+      if [ "$RC" != "0" ]
+      then
+        echo "ERROR - Lifecycle returns $RC"
+        echo "Lifecycle command execution failed"
+        echo "----------------------------- will exit with $RC"
+        exit $RC
+      else
+        echo "Lifecycle command successfull"
+      fi
+ 
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $LIFECYCLE_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $LIFECYCLE_SCAN == "true"'
+
+sonatype_lifecycle_scan_ui:
+  stage: sonatype_lifecycle_scan
+  image: $SONATYPE_IMG
+  environment: $ENV
+  variables:
+    LIFECYCLE_USER: $NEXUS_IQ_USERNAME
+    LIFECYCLE_PASSWORD: $NEXUS_IQ_PASSWORD
+    NEXUS_IQ_URL: $NEXUS_IQ_URL
+    MY_VERSION: $CI_COMMIT_SHORT_SHA
+    MY_LIFECYCLE_SSC_APP_ID: $MY_LIFECYCLE_SSC_APP_ID1
+    PATH_TO_JAR_OR_ZIP: $CI_PROJECT_DIR/dataimportmaintenanceui
+  script:
+    - echo "prepare for scan"
+    - echo "Pushing Artifact to sonatype"
+    - export RC=0  
+    - /sonatype/evaluate -i "$MY_LIFECYCLE_SSC_APP_ID1" -s "$NEXUS_IQ_URL" -a $LIFECYCLE_USER:$LIFECYCLE_PASSWORD -t Release "$PATH_TO_JAR_OR_ZIP" -r lifecycle-results.json || RC=$?
+    - |
+      if [ "$RC" != "0" ]
+      then
+        echo "ERROR - Lifecycle returns $RC"
+        echo "Lifecycle command execution failed"
+        echo "----------------------------- will exit with $RC"
+        exit $RC
+      else
+        echo "Lifecycle command successfull"
+      fi
+ 
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $LIFECYCLE_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $LIFECYCLE_SCAN == "true"'
+
+--------------------------------------------------
+
+#
+# webinspect_scan.yml
+#
+webinspect_scan:
+  stage: webinspect_scan
+  environment: $ENV
+  image: $FORTIFY_IMG
+  variables:
+    SCANCENTRALCTRL_TOKEN: $SCANCENTRALCTRL_TOKEN
+    CICD_IDENTIFIER: $CICD_IDENTIFIER
+    WEBINSPECT_PACKAGE_URL: $WEBINSPECT_PACKAGE_URL
+  script:
+    - curl -o webinspect.tar "$WEBINSPECT_PACKAGE_URL"
+    - tar -xvf webinspect.tar
+    - chmod 755 DAST_start_scan.sh
+    - ./DAST_start_scan.sh "${SCANCENTRALCTRL_TOKEN}" "${CICD_IDENTIFIER}"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $WEBINSPECT_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $WEBINSPECT_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $WEBINSPECT_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $WEBINSPECT_SCAN == "true"'
+
+
+-------------------------------------------------
+#
+# .gitlab-ci.yml (ECR)
+#
+variables:
+
+  AWSCLI_IMG: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/python/python3.8-awscli-terraform"
+  NODE_IMG: "fmk.nexus.onefiserv.net/fmk/node/node18:FMK-06-01-24"
+  # docker variables - required to set for docker env
+  DOCKER_DRIVER: overlay2
+  DOCKER_HOST: tcp://docker:2376/
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_TLS_VERIFY: 0
+  DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+  #
+  # IMAGE_TAGS: "$CI_PIPELINE_IID"
+  # IMAGE_TAGS: "latest"
+  #
+
+stages:
+  - build_breaker_scan
+  - fortify-scan
+  - build-jar-service
+  - compile-ui
+  - build-jar-ui
+  - sonatype_lifecycle_scan
+  - build-docker-image
+  - deploy-image-2fargate
+  - webinspect_scan
+
+include:
+  - local: scans/build_breaker_scan.yml
+  - local: scans/fortify-scan.yml
+  - local: scans/sonatype_lifecycle_scan.yml
+  - local: scans/webinspect_scan.yml
+
+
+compile-ui:
+  stage: compile-ui
+  image: $NODE_IMG
+  environment: $ENV
+  script:
+    - echo "Hello, $GITLAB_USER_LOGIN! The CI_PIPELINE_IID is $CI_PIPELINE_IID"
+    - cd $CI_PROJECT_DIR
+    - cd dataimportmaintenanceui/frontend
+    - node -v
+    - npm -v
+    #- npm config ls -l
+    ##- curl -o yargs-16.2.0.tgz https://nexus.onefiserv.net/repository/npm-registry/yargs/-/yargs-16.2.0.tgz
+    - npm cache ls
+    - npm cache clean --force
+    - npm install --verbose
+    #- echo "Check installation of clean-css.."
+    - echo "Compiling the UI code..."
+    - CI=false npm run build --verbose
+
+
+    #- mvn -X -s settings.xml clean package -DskipTests=true
+  rules:
+    # - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH !~ /^Release.*/'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH =~ /^main/ && $SKIP_UI =~ /^NO/'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH !~ /^Release.*/ && $SKIP_UI =~ /^NO/'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH =~ /^Release.*/ && $SKIP_UI =~ /^NO/'
+    - if: '$CI_COMMIT_REF_NAME == "main" && $SKIP_UI =~ /^NO/'
+      when: on_success
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/*
+
+build-jar-ui:
+  stage: build-jar-ui
+  image: $JAVA_IMG
+  environment: $ENV
+  script:
+    - echo "Hello, $GITLAB_USER_LOGIN! The CI_PIPELINE_IID is $CI_PIPELINE_IID"
+    - java -version
+    - mvn -version
+    - cd $CI_PROJECT_DIR/dataimportmaintenanceui
+    #- ls -lrt $CI_PROJECT_DIR/src/main/resources/public/*
+    #- nv_val=`node --version`
+    - export NODE_VERSION=$nv_val
+    - echo "Node Version- $NODE_VERSION"
+    - mvn -s settings.xml clean install package -Dmaven.test.skip=true
+    - cp $CI_PROJECT_DIR/util/jacocoagent.jar ./target/jacocoagent.jar
+  rules:
+    # - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH !~ /^Release.*/'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH =~ /^main/'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH !~ /^Release.*/'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH =~ /^Release.*/'
+    - if: $CI_COMMIT_REF_NAME == "main"
+      when: on_success
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/dataimportmaintenanceui/*
+
+
+build-jar-service:
+  stage: build-jar-service
+  image: $JAVA_IMG
+  environment: $ENV
+  script:
+    - echo "Hello, $GITLAB_USER_LOGIN! The CI_PIPELINE_IID is $CI_PIPELINE_IID, CI_PIPELINE_ID - $CI_PIPELINE_ID"
+    - cd $CI_PROJECT_DIR
+    - cd dataimportmaintenanceservice
+    - java -version
+    - mvn -version
+    - mvn -s settings.xml clean package -DskipTests=true
+    - ls -a
+    - cp $CI_PROJECT_DIR/util/jacocoagent.jar ./target/jacocoagent.jar
+  rules:
+    # - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH !~ /^Release.*/'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH =~ /^main/'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH !~ /^Release.*/'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH =~ /^Release.*/'
+    - if: $CI_COMMIT_REF_NAME == "main"
+      when: on_success
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/dataimportmaintenanceservice/*
+
+
+build-docker-image:
+  stage: build-docker-image
+  image: $DOCKER_DIND_BASE
+  environment: $ENV
+  variables:
+    BUILD_DOCKER_ROOT: $CI_PROJECT_DIR/dataimportmaintenanceui
+  services:
+    - name: $DOCKER_DIND_BASE
+      alias: "docker"
+  script:
+    - . ./util/aws_credential_from_vault.sh
+    - aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_NAME
+    - export BRANCH_NAME=$(echo $CI_COMMIT_BRANCH | sed 's/.*\///g')
+    - echo $BRANCH_NAME
+    - CICD_INFO_STR="Build Number- $CI_PIPELINE_IID,Global Pipeline Number- $CI_PIPELINE_ID,Branch Name- $BRANCH_NAME,Commit ID- $CI_COMMIT_SHORT_SHA,Pipeline URL- $CI_PIPELINE_URL"
+    - cd $CI_PROJECT_DIR/dataimportmaintenanceui
+    - pwd
+    - ls -l target/*
+    - |
+      if [ "$ENV" == "cert" ]
+      then
+        docker build -f ./Dockerfile-cert --build-arg CICD_INFO="$CICD_INFO_STR" --build-arg JRE_IMG="$JRE_IMG" -t $DOCKER_IMAGE_NAME:latest -t $DOCKER_IMAGE_NAME:$CI_PIPELINE_IID -t $DOCKER_IMAGE_NAME:$BRANCH_NAME .
+      else
+        docker build --build-arg CICD_INFO="$CICD_INFO_STR" --build-arg JRE_IMG="$JRE_IMG" -t $DOCKER_IMAGE_NAME:latest -t $DOCKER_IMAGE_NAME:$CI_PIPELINE_IID -t $DOCKER_IMAGE_NAME:$BRANCH_NAME .
+      fi
+    - docker tag $DOCKER_IMAGE_NAME:latest $ECR_NAME/$DOCKER_IMAGE_NAME:latest
+    - docker tag $DOCKER_IMAGE_NAME:$CI_PIPELINE_IID $ECR_NAME/$DOCKER_IMAGE_NAME:$CI_PIPELINE_IID
+    - docker tag $DOCKER_IMAGE_NAME:$BRANCH_NAME $ECR_NAME/$DOCKER_IMAGE_NAME:$BRANCH_NAME
+    - docker image push --all-tags $ECR_NAME/$DOCKER_IMAGE_NAME
+
+    - cd $CI_PROJECT_DIR/dataimportmaintenanceservice
+    - pwd
+    - ls -l target/*
+    - |
+      if [ "$ENV" == "cert" ]
+      then
+        docker build -f ./Dockerfile-cert  --build-arg CICD_INFO="$CICD_INFO_STR" --build-arg JRE_IMG="$JRE_IMG" -t $DOCKER_IMAGE_NAME1:latest -t $DOCKER_IMAGE_NAME1:$CI_PIPELINE_IID -t $DOCKER_IMAGE_NAME1:$BRANCH_NAME .
+      else
+        docker build --build-arg CICD_INFO="$CICD_INFO_STR" --build-arg JRE_IMG="$JRE_IMG" -t $DOCKER_IMAGE_NAME1:latest -t $DOCKER_IMAGE_NAME1:$CI_PIPELINE_IID -t $DOCKER_IMAGE_NAME1:$BRANCH_NAME .
+      fi
+    - docker tag $DOCKER_IMAGE_NAME1:latest $ECR_NAME/$DOCKER_IMAGE_NAME1:latest
+    - docker tag $DOCKER_IMAGE_NAME1:$CI_PIPELINE_IID $ECR_NAME/$DOCKER_IMAGE_NAME1:$CI_PIPELINE_IID
+    - docker tag $DOCKER_IMAGE_NAME1:$BRANCH_NAME $ECR_NAME/$DOCKER_IMAGE_NAME1:$BRANCH_NAME
+    - docker image push --all-tags $ECR_NAME/$DOCKER_IMAGE_NAME1
+
+    - cd $CI_PROJECT_DIR/scheduler/mgiagentmastertrigger
+    - pwd
+    - ls -l *
+    - docker build --build-arg CICD_INFO="$CICD_INFO_STR" --build-arg PY_IMG="$PY_IMG" -t $DOCKER_IMAGE_NAME2:latest -t $DOCKER_IMAGE_NAME2:$CI_PIPELINE_IID -t $DOCKER_IMAGE_NAME2:$BRANCH_NAME .
+    - docker tag $DOCKER_IMAGE_NAME2:latest $ECR_NAME/$DOCKER_IMAGE_NAME2:latest
+    - docker tag $DOCKER_IMAGE_NAME2:$CI_PIPELINE_IID $ECR_NAME/$DOCKER_IMAGE_NAME2:$CI_PIPELINE_IID
+    - docker tag $DOCKER_IMAGE_NAME2:$BRANCH_NAME $ECR_NAME/$DOCKER_IMAGE_NAME2:$BRANCH_NAME
+    - docker image push --all-tags $ECR_NAME/$DOCKER_IMAGE_NAME2
+
+  rules:
+    #- if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH !~ /^Release.*/'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH =~ /^main/ && $SKIP_UI =~ /^NO/'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH !~ /^Release.*/ && $SKIP_UI =~ /^NO/'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH =~ /^Release.*/ && $SKIP_UI =~ /^NO/'
+    - if: '$CI_COMMIT_REF_NAME == "main" && $SKIP_UI =~ /^NO/'
+      when: on_success
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/*
+  dependencies:
+    - build-jar-ui
+    - build-jar-service
+  tags:
+    - docker
+
+
+deploy-image-2fargate:
+  stage: deploy-image-2fargate
+  image: $AWSCLI_IMG
+  environment: $ENV
+  services:
+    - name: $AWSCLI_IMG
+      alias: "docker"
+  script:
+    - . ./util/regain_aws_creds.sh
+    - . ./util/jacoco-files-upload.sh "dataimportmaintenanceui/target/classes" "dataimportmaintenanceui/src" "dataimport-maintenance-ui" "cert-dim-codecoverage-s3"
+    - . ./util/jacoco-files-upload.sh "dataimportmaintenanceservice/target/classes" "dataimportmaintenanceservice/src" "dataimport-maintenance-service" "cert-dim-codecoverage-s3"
+    - python3 util/snapIt.py latest $ECS_CLUSTER_NAME $ECS_SERVICE_NAME $ECS_TASK_NAME $REGION
+    - python3 util/snapIt.py latest $ECS_CLUSTER_NAME1 $ECS_SERVICE_NAME1 $ECS_TASK_NAME1 $REGION
+    - . ./util/deployment_trigger_and_stability_check.sh $ECS_CLUSTER_NAME $ECS_CLUSTER_NAME1
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $DEPLOY == "true" && $CI_COMMIT_BRANCH =~  /^main/'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $DEPLOY == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $DEPLOY == "true" && $CI_COMMIT_BRANCH =~ /^Release.*/'
+    - if: '$CI_COMMIT_REF_NAME == "main" && $DEPLOY == "true"'
+      when: on_success
+  dependencies:
+    - build-docker-image
+  tags:
+    - docker
