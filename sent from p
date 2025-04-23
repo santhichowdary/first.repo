@@ -1,0 +1,44 @@
+read me 
+
+component: 
+  inputs:
+    ENV:
+      description: "Target environment"
+      required: true
+    FORTIFY_IMG:
+      description: "Docker image for Fortify"
+      required: true
+    MY_FORTIFY_SSC_APP:
+      description: "Fortify application name"
+      required: true
+    MY_FORTIFY_SSC_PV:
+      description: "Fortify project version"
+      required: true
+    BUILD_BREAKER_PACKAGE_URL:
+      description: "URL of the Build Breaker package"
+      required: true
+    AUTHENTICATED_USER_EMAIL:
+      description: "Email used for authentication"
+      required: true
+    ON_BEHALF_OF_EMAIL:
+      description: "Email on behalf of which the scan is run"
+      required: true
+
+spec:
+  build_breaker_scan:
+    stage: build_breaker_scan
+    image: $[[ inputs.FORTIFY_IMG ]]
+    environment: $[[ inputs.ENV ]]
+    variables:
+      Application_name: $[[ inputs.MY_FORTIFY_SSC_APP ]]
+      Version_name: $[[ inputs.MY_FORTIFY_SSC_PV ]]
+      BUILD_BREAKER_PACKAGE_URL: $[[ inputs.BUILD_BREAKER_PACKAGE_URL ]]
+    script:
+      - curl -o buildbreaker.tar "$BUILD_BREAKER_PACKAGE_URL"
+      - tar -xvf buildbreaker.tar 
+      - chmod 777 build-breaker.sh
+      - ls -la
+      - ./build-breaker.sh "$Application_name" "$Version_name" "$[[ inputs.AUTHENTICATED_USER_EMAIL ]]" "$[[ inputs.ON_BEHALF_OF_EMAIL ]]"
+    rules:
+      - if: '$CI_PIPELINE_SOURCE == "schedule" && $BUILD_BREAKER == "true"'
+      - if: '$CI_PIPELINE_SOURCE == "api" && $BUILD_BREAKER == "true"'
