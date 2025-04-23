@@ -471,3 +471,302 @@ USER 1001
 ADD ./target/SpringbootHelloworld-0.0.1-SNAPSHOT.jar /opt/docker
 #The jar file needs to be replaced with application jar file
 ENTRYPOINT ["java","-cp", "/opt/docker/*", "-jar", "/opt/docker/SpringbootHelloworld-0.0.1-SNAPSHOT.jar"]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+----------------------------------
+
+
+spec:
+  inputs:
+    STAGE:
+      default: build-docker-image
+      description: 'REQUIRED: CICD Pipelne Stage name'
+    JOBNAME:
+      default: build-docker-image
+      description: 'REQUIRED: CICD Pipeline Jon Name'
+    TARGET_PLATFORM:
+      options: ['AWS_ECS', 'AWS_LAMBDA']
+      description: 'REQUIRED: ex: AWS_ECS, AWS_LAMBDA'
+    IMAGE:
+      options: ['$CDK_IMG', '$AWSCLI_IMG', '$JAVA_IMG', '$DOCKER_DIND_BASE', '$NODE_IMG', '$PY_IMG']
+      description: 'REQUIRED: ex: $CDK_IMG, $AWSCLI_IMG, $JAVA_IMG, $DOCKER_DIND_BASE, $NODE_IMG, $PY_IMG etc.. These images should be defined under variables of respective gitlab-ci'
+    ARTIFACT_FOLDER:
+      type: array
+      default: [$CI_PROJECT_DIR/*]
+      description: 'OPTIONAL: Artifact folder names'
+    NEEDS:
+      type: array
+      default: []
+      description: 'OPTIONAL: CICD Pipeline Job Needs'
+    DEPENDENCIES:
+      type: array
+      default: []
+      description: 'OPTIONAL: CICD Pipeline Job Dependencies'
+    PACKAGES:
+      default: ''
+      description: 'OPTIONAL: List of Packages to build docker image'
+---
+
+"$[[ inputs.JOBNAME ]]":
+  stage: $[[ inputs.STAGE ]]
+  needs: $[[ inputs.NEEDS ]]
+  dependencies: $[[ inputs.dependencies ]]
+  image: $[[ inputs.IMAGE ]]
+  environment: $ENV
+  services:
+    - name: $[[ inputs.IMAGE ]]
+      alias: "docker"
+  script:
+    - |
+      if [ "$ENV" == "dev" ]; then
+      wget -O aws_credential_from_svc_user.sh --header "JOB-TOKEN: $CI_JOB_TOKEN" ${CI_API_V4_URL}/projects/49692/packages/generic/aws_credential_from_svc_user_sh/0.0.1/aws_credential_from_svc_user.sh
+      . ./aws_credential_from_svc_user.sh
+      else
+      wget -O aws_credential_from_vault.sh --header "JOB-TOKEN: $CI_JOB_TOKEN" ${CI_API_V4_URL}/projects/49692/packages/generic/aws_credential_from_vault_sh/0.0.1/aws_credential_from_vault.sh
+      . ./aws_credential_from_vault.sh
+      fi
+    - platform=$[[ inputs.TARGET_PLATFORM ]]
+    - |
+      if [ "$platform" == "AWS_ECS" ]; then
+         aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_NAME
+         export BRANCH_NAME=$(echo $CI_COMMIT_BRANCH | sed 's/.*\///g')
+         echo "Branch Name- $BRANCH_NAME"
+         CICD_INFO_STR="Build Number- $CI_PIPELINE_IID,Global Pipeline Number- $CI_PIPELINE_ID,Branch Name- $BRANCH_NAME,Commit ID- $CI_COMMIT_SHORT_SHA,Pipeline URL- $CI_PIPELINE_URL"
+         packages=$[[ inputs.PACKAGES ]]
+           if [ "$packages" != '' ]; then
+              j=0
+              for i in ${packages[@]}; do
+              cd $CI_PROJECT_DIR/$i
+              pwd
+              ls -l target/*
+              if [ "$j" -eq 0 ]; then
+                 if [ "$ENV" == "cert" ]; then
+                    docker build -f ./Dockerfile-cert --build-arg CICD_INFO="$CICD_INFO_STR" --build-arg JRE_IMG="$JRE_IMG" -t $DOCKER_IMAGE_NAME:latest -t $DOCKER_IMAGE_NAME:$CI_PIPELINE_IID -t $DOCKER_IMAGE_NAME:$BRANCH_NAME .
+                 else
+                    docker build --build-arg CICD_INFO="$CICD_INFO_STR" --build-arg JRE_IMG="$JRE_IMG" -t $DOCKER_IMAGE_NAME:latest -t $DOCKER_IMAGE_NAME:$CI_PIPELINE_IID -t $DOCKER_IMAGE_NAME:$BRANCH_NAME .
+                 fi
+                 docker tag $DOCKER_IMAGE_NAME:latest $ECR_NAME/$DOCKER_IMAGE_NAME:latest
+                 docker tag $DOCKER_IMAGE_NAME:$CI_PIPELINE_IID $ECR_NAME/$DOCKER_IMAGE_NAME:$CI_PIPELINE_IID
+                 docker tag $DOCKER_IMAGE_NAME:$BRANCH_NAME $ECR_NAME/$DOCKER_IMAGE_NAME:$BRANCH_NAME
+                 docker image push --all-tags $ECR_NAME/$DOCKER_IMAGE_NAME
+              else
+                 if [ "$ENV" == "cert" ]; then
+                 docker build -f ./Dockerfile-cert --build-arg CICD_INFO="$CICD_INFO_STR" --build-arg JRE_IMG="$JRE_IMG" -t $DOCKER_IMAGE_NAME$j:latest -t $DOCKER_IMAGE_NAME$j:$CI_PIPELINE_IID -t $DOCKER_IMAGE_NAME$j:$BRANCH_NAME .
+                 else
+                 docker build --build-arg CICD_INFO="$CICD_INFO_STR" --build-arg JRE_IMG="$JRE_IMG" -t $DOCKER_IMAGE_NAME$j:latest -t $DOCKER_IMAGE_NAME$j:$CI_PIPELINE_IID -t $DOCKER_IMAGE_NAME$j:$BRANCH_NAME .
+                 fi
+                 docker tag $DOCKER_IMAGE_NAME$j:latest $ECR_NAME/$DOCKER_IMAGE_NAME$j:latest
+                 docker tag $DOCKER_IMAGE_NAME$j:$CI_PIPELINE_IID $ECR_NAME/$DOCKER_IMAGE_NAME$j:$CI_PIPELINE_IID
+                 docker tag $DOCKER_IMAGE_NAME$j:$BRANCH_NAME $ECR_NAME/$DOCKER_IMAGE_NAME$j:$BRANCH_NAME
+                 docker image push --all-tags $ECR_NAME/$DOCKER_IMAGE_NAME$j
+                 j=$j+1
+              fi
+              done
+           else
+             docker build --build-arg CICD_INFO="$CICD_INFO_STR" --build-arg JRE_IMG="$JRE_IMG" -t $DOCKER_IMAGE_NAME:latest -t $DOCKER_IMAGE_NAME:$CI_PIPELINE_IID -t $DOCKER_IMAGE_NAME:$BRANCH_NAME .
+             docker tag $DOCKER_IMAGE_NAME:latest $ECR_NAME/$DOCKER_IMAGE_NAME:latest
+             docker tag $DOCKER_IMAGE_NAME:$CI_PIPELINE_IID $ECR_NAME/$DOCKER_IMAGE_NAME:$CI_PIPELINE_IID
+             docker tag $DOCKER_IMAGE_NAME:$BRANCH_NAME $ECR_NAME/$DOCKER_IMAGE_NAME:$BRANCH_NAME
+             docker image push --all-tags $ECR_NAME/$DOCKER_IMAGE_NAME
+           fi
+      elif [ "$platform" == "AWS_LAMBDA" ]; then
+        . ./serverless/upload_pkg_to_s3.sh
+      fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH =~ /^main/'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH !~ /^Release.*/'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH =~ /^Release.*/'
+    - if: $CI_COMMIT_REF_NAME == "main"
+      when: on_success
+  artifacts:
+    paths: $[[ inputs.ARTIFACT_FOLDER ]]
+  dependencies: $[[ inputs.DEPENDENCIES ]]
+  tags:
+    - docker
+
+
+
+
+ci -rake
+
+#
+# .gitlab-ci.yml (ECR)
+#
+variables:
+  # images for stages
+  #
+  #### java 11 ###
+  #JAVA_IMG: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/java/java11-mvn3.8-nodejs16:latest"
+  #
+  #### java 17 ###
+  #JAVA_IMG: "nexus.onefiserv.net:8091/vendor/redhat-public/ubi8/openjdk-17:1.14"
+  #
+  #DOCKER_DIND_BASE: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/docker/docker:20.10.16-dind-fiserv-3"
+  AWSCLI_IMG: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/python/python3.8-awscli-terraform"
+  # docker variables - required to set for docker env
+  DOCKER_DRIVER: overlay2
+  DOCKER_HOST: tcp://docker:2376/
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_TLS_VERIFY: 0
+  DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+  #
+  # IMAGE_TAGS: "$CI_PIPELINE_IID"
+  # IMAGE_TAGS: "latest"
+  #
+
+stages:
+  - build_breaker_scan
+  - fortify-scan
+  - build-jar
+  - build-jar-ui
+  - lifecycle_scan
+  - build-docker-image
+  - deploy-image-2fargate
+  - webinspect_scan
+
+
+include:
+  #- component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build-jar@main
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build@create-basic-folders
+    inputs:
+      JOBNAME: build-jar
+      STAGE: build-jar
+      TARGET_PLATFORM: AWS_ECS
+      IMAGE: $JAVA_IMG
+      #NEEDS: []
+      #DEPENDENCIES: []
+      ARTIFACT_FOLDER: [$CI_PROJECT_DIR/target/*]
+  #- component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build-jar@create-basic-folders
+  #  inputs:
+  #    JOBNAME: build-jar-ui
+  #    STAGE: build-jar-ui
+  #    #NEEDS: [job: build-jar]
+  #- component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build-docker-image@main
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build-upload@create-basic-folders
+    inputs:
+      JOBNAME: build-docker-image
+      STAGE: build-docker-image
+      TARGET_PLATFORM: AWS_ECS
+      IMAGE: $DOCKER_DIND_BASE
+      #PACKAGES: (target/first target/second target/third)
+      NEEDS: [job: build-jar]
+      DEPENDENCIES: [build-jar]
+      ARTIFACT_FOLDER: [$CI_PROJECT_DIR/*] 
+  #- component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/deploy-image-2fargate@main
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/deploy@create-basic-folders
+    inputs:
+      JOBNAME: deploy-image-2fargate
+      STAGE: deploy-image-2fargate
+      TARGET_PLATFORM: AWS_ECS
+      IMAGE: $AWSCLI_IMG
+      NEEDS: [job: build-docker-image]
+      DEPENDENCIES: [build-docker-image]
+      #PACKAGES: (somepackage somewhere)
+      #SERVICES: (someservices something)
+      #S3NAME: somes3
+
+--------------------------------------------------
+
+readme
+
+
+Build docker-image, tag and uploads to ECR, for AWS Lamda fuction, uploads to s3 . You can also run multiple pipeline stages using the same template and select order of run, parallel or sequencial.
+Based on below base logic:
+
+    - aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_NAME    
+    - export BRANCH_NAME=$(echo $CI_COMMIT_BRANCH | sed 's/.*\///g')
+    - echo "Branch Name- $BRANCH_NAME"
+    - CICD_INFO_STR="Build Number- $CI_PIPELINE_IID,Global Pipeline Number- $CI_PIPELINE_ID,Branch Name- $BRANCH_NAME,Commit ID- $CI_COMMIT_SHORT_SHA,Pipeline URL- $CI_PIPELINE_URL"
+    - docker build --build-arg CICD_INFO="$CICD_INFO_STR" --build-arg JRE_IMG="$JRE_IMG" -t $DOCKER_IMAGE_NAME:latest -t $DOCKER_IMAGE_NAME:$CI_PIPELINE_IID -t $DOCKER_IMAGE_NAME:$BRANCH_NAME .
+    - docker tag $DOCKER_IMAGE_NAME:latest $ECR_NAME/$DOCKER_IMAGE_NAME:latest
+    - docker tag $DOCKER_IMAGE_NAME:$CI_PIPELINE_IID $ECR_NAME/$DOCKER_IMAGE_NAME:$CI_PIPELINE_IID
+    - docker tag $DOCKER_IMAGE_NAME:$BRANCH_NAME $ECR_NAME/$DOCKER_IMAGE_NAME:$BRANCH_NAME
+    - docker image push --all-tags $ECR_NAME/$DOCKER_IMAGE_NAME
+
+
+For AWS Lambda functions:
+
+    - . ./upload_pkg_to_s3.sh
+
+
+
+Usage
+To add a component to a project's CI/CD configuration, use the include: component keyword. The component reference is formatted as <FQDN>/<project-path>/<component-name>@<specific-version>, for example:
+
+1st scenario: Running Job using this template:
+
+include:
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build-upload@main
+    inputs:
+      JOBNAME: some-jobname
+      STAGE: some-stage-name
+      TARGET_PLATFORM: AWS_ECS
+      IMAGE: $DOCKER_DIND_BASE
+      ARTIFACT_FOLDER: [$CI_PROJECT_DIR/*]
+
+
+
+2nd scenario: Running a Job using template and having dependency on previous job:
+
+include:
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build-upload@main
+    inputs:
+      JOBNAME: some-jobname
+      STAGE: some-stage-name
+      TARGET_PLATFORM: AWS_ECS
+      IMAGE: $DOCKER_DIND_BASE
+      NEEDS: [job: build-jar]   #build-jar is just a example, can be anything as per your previous stage jobname
+      DEPENDENCIES: [build-jar]
+
+
+
+3rd scenario: Running a job with multiple packages to build and having dependencies on multiple jobs:
+
+include:
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build-upload@main
+    inputs:
+      JOBNAME: some-name
+      STAGE: some-stage-name
+      TARGET_PLATFORM: AWS_ECS
+      IMAGE: $DOCKER_DIND_BASE
+      PACKAGES: (first second somefolder/third)
+      NEEDS: [job: build-jar-ui, job: build-jar]   #build-jar and build-jar-ui is just a example
+      DEPENDENCIES: [build-jar-ui, build-jar]
+      ARTIFACT_FOLDER: [$CI_PROJECT_DIR/*]
+
+
+Note: You need to add stage name in your list of stages in gitlab-ci.yml
+
+Variables
+
+REQUIRED Variables:
+
+JOBNAME: Job Name to run in CICD Pipelines
+STAGE: Stage Name in CICD Pipeline
+$DOCKER_IMAGE_NAME: Individual project should have this variable defined in gitlab. Can also have $DOCKER_IMAGE_NAME1 or $DOCKER_IMAGE_NAME2
+TARGET_PLATFORM: Depending on env. ex: AWS_ECS, AWS_LAMBDA
+IMAGE: Images of gitlab runner. ex: $CDK_IMG, $AWSCLI_IMG, $JAVA_IMG, etc
+
+
+OPTIONAL Variables:
+
+ARTIFACT_FOLDER: One or more foldernames
+NEEDS: One or more Job names can be defined as ex. [job: build-jar, job: build-jar-ui, job: any..so.on]
+DEPENDENCIES: One or more Jobs can be defined as ex. [build-jar, build-jar-ui, any..so.on]
+PACKAGES: One or more packages for which docker image need to be built
