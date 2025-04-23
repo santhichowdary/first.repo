@@ -477,3 +477,41 @@ include:
       MY_LIFECYCLE_SSC_APP_ID: $MY_LIFECYCLE_SSC_APP_ID
       PATH_TO_JAR_OR_ZIP: $CI_PROJECT_DIR/dataimportmaintenanceservice
 
+
+
+------------------------------
+
+
+variables:
+  AWSCLI_IMG: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/python/python3.8-awscli-terraform"
+  NODE_IMG: "fmk.nexus.onefiserv.net/fmk/node/node18:FMK-06-01-24"
+  DOCKER_DRIVER: overlay2
+  DOCKER_HOST: tcp://docker:2376/
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_TLS_VERIFY: 0
+  DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+
+stages:
+  - build_breaker_scan
+  - fortify-scan
+  - sonatype_lifecycle_scan
+  - webinspect_scan
+
+include:
+  - component: otherpath/build_breaker_scan.yml
+    inputs:
+      project_path: $CI_PROJECT_DIR
+
+  - component: otherpath/fortify_scan.yml
+    inputs:
+      project_path: $CI_PROJECT_DIR
+
+  - component: otherpath/sonatype_lifecycle_scan.yml
+    inputs:
+      project_path: $CI_PROJECT_DIR
+
+  - component: otherpath/webinspect_scan.yml
+    inputs:
+      project_path: $CI_PROJECT_DIR
+
+
