@@ -1,44 +1,479 @@
 read me 
 
-component: 
-  inputs:
-    ENV:
-      description: "Target environment"
-      required: true
-    FORTIFY_IMG:
-      description: "Docker image for Fortify"
-      required: true
-    MY_FORTIFY_SSC_APP:
-      description: "Fortify application name"
-      required: true
-    MY_FORTIFY_SSC_PV:
-      description: "Fortify project version"
-      required: true
-    BUILD_BREAKER_PACKAGE_URL:
-      description: "URL of the Build Breaker package"
-      required: true
-    AUTHENTICATED_USER_EMAIL:
-      description: "Email used for authentication"
-      required: true
-    ON_BEHALF_OF_EMAIL:
-      description: "Email on behalf of which the scan is run"
-      required: true
+# File: cicd_components/build_breaker_scan.yml
 
 spec:
-  build_breaker_scan:
-    stage: build_breaker_scan
-    image: $[[ inputs.FORTIFY_IMG ]]
-    environment: $[[ inputs.ENV ]]
-    variables:
-      Application_name: $[[ inputs.MY_FORTIFY_SSC_APP ]]
-      Version_name: $[[ inputs.MY_FORTIFY_SSC_PV ]]
-      BUILD_BREAKER_PACKAGE_URL: $[[ inputs.BUILD_BREAKER_PACKAGE_URL ]]
-    script:
-      - curl -o buildbreaker.tar "$BUILD_BREAKER_PACKAGE_URL"
-      - tar -xvf buildbreaker.tar 
-      - chmod 777 build-breaker.sh
-      - ls -la
-      - ./build-breaker.sh "$Application_name" "$Version_name" "$[[ inputs.AUTHENTICATED_USER_EMAIL ]]" "$[[ inputs.ON_BEHALF_OF_EMAIL ]]"
-    rules:
-      - if: '$CI_PIPELINE_SOURCE == "schedule" && $BUILD_BREAKER == "true"'
-      - if: '$CI_PIPELINE_SOURCE == "api" && $BUILD_BREAKER == "true"'
+  inputs:
+    JOBNAME:
+      default: run_build_breaker
+      description: 'REQUIRED: Job name for Build Breaker Scan'
+    STAGE:
+      default: build_breaker_scan
+      description: 'REQUIRED: Stage name for this job'
+    IMAGE:
+      default: $FORTIFY_IMG
+      description: 'REQUIRED: Docker image to use for Build Breaker'
+    APPLICATION_NAME:
+      default: $MY_FORTIFY_SSC_APP
+      description: 'REQUIRED: Fortify SSC Application Name'
+    VERSION_NAME:
+      default: $MY_FORTIFY_SSC_PV
+      description: 'REQUIRED: Fortify SSC Version Name'
+    BUILD_BREAKER_PACKAGE_URL:
+      default: $BUILD_BREAKER_PACKAGE_URL
+      description: 'REQUIRED: URL to the Build Breaker Package'
+    AUTH_USER_EMAIL:
+      default: $AUTHENTICATED_USER_EMAIL
+      description: 'REQUIRED: Authenticated user email'
+    ON_BEHALF_EMAIL:
+      default: $ON_BEHALF_OF_EMAIL
+      description: 'REQUIRED: On-behalf-of email'
+
+"$[[ inputs.JOBNAME ]]":
+  stage: $[[ inputs.STAGE ]]
+  image: $[[ inputs.IMAGE ]]
+  environment: $ENV
+  script:
+    - curl -o buildbreaker.tar "$[[ inputs.BUILD_BREAKER_PACKAGE_URL ]]"
+    - tar -xvf buildbreaker.tar 
+    - chmod 777 build-breaker.sh
+    - ls -la
+    - ./build-breaker.sh "$[[ inputs.APPLICATION_NAME ]]" "$[[ inputs.VERSION_NAME ]]" "$[[ inputs.AUTH_USER_EMAIL ]]" "$[[ inputs.ON_BEHALF_EMAIL ]]"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $BUILD_BREAKER == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $BUILD_BREAKER == "true"'
+
+
+---------------------------------------------
+File: cicd_components/fortify_scan_service.yml
+
+
+
+spec:
+  inputs:
+    JOBNAME:
+      default: run_fortify_scan_service
+      description: 'REQUIRED: Job name for Fortify Scan Service'
+    STAGE:
+      default: fortify_scan
+      description: 'REQUIRED: Stage name for this job'
+    IMAGE:
+      default: $FORTIFY_IMG
+      description: 'REQUIRED: Docker image to use for Fortify Scan Service'
+    APPLICATION_NAME:
+      default: $MY_FORTIFY_SSC_APP
+      description: 'REQUIRED: Fortify SSC Application Name'
+    VERSION_NAME:
+      default: $MY_FORTIFY_SSC_PV
+      description: 'REQUIRED: Fortify SSC Version Name'
+    FORTIFY_SSC_URL:
+      default: $FORTIFY_SSC_URL
+      description: 'REQUIRED: Fortify SSC URL'
+    FORTIFY_SSC_TOKEN:
+      default: $FORTIFY_SSC_TOKEN
+      description: 'REQUIRED: Fortify SSC Token'
+    SCAN_OPTIONS:
+      default: "--log-file $CI_PROJECT_DIR/fortify.log --output-file $CI_PROJECT_DIR/fortify.fpr"
+      description: 'Optional: Additional scan options'
+
+"$[[ inputs.JOBNAME ]]":
+  stage: $[[ inputs.STAGE ]]
+  image: $[[ inputs.IMAGE ]]
+  environment: $ENV
+  script:
+    - echo "Starting Fortify scan for service"
+    - export SCANCENTRAL_LOG="$CI_PROJECT_DIR"
+    - export RC=0
+    - cd $CI_PROJECT_DIR/servicefolder  # Change to service folder
+    - scancentral -sscurl "$[[ inputs.FORTIFY_SSC_URL ]]" -ssctoken $[[ inputs.FORTIFY_SSC_TOKEN ]] start -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER" -targs "--build-label $[[ inputs.VERSION_NAME ]] $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER" -exclude '**/**/*.pfx' -exclude '**/**/*.jks' -exclude 'settings.xml' -upload -application "$[[ inputs.APPLICATION_NAME ]]" -version $[[ inputs.VERSION_NAME ]] -uptoken "$[[ inputs.FORTIFY_SSC_TOKEN ]]" $SCANCENTRAL_BUILD_OPTS $[[ inputs.SCAN_OPTIONS ]] --save-package filesscanned.zip 2> scancentral.err || RC=$?
+    - echo "Result from Fortify scan service - $RC"
+    - ls -lart $CI_PROJECT_DIR  # List project directory to debug
+    - if [ -f "$CI_PROJECT_DIR/scancentral.log" ]; then cat $CI_PROJECT_DIR/scancentral.log; fi  # Display logs if exists
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME =~ /^main/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME !~ /^Release.*/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $FORTIFY_SCAN == "true"'
+
+----------------------------------------------------------
+
+File: cicd_components/fortify_scan_ui.yml
+
+spec:
+  inputs:
+    JOBNAME:
+      default: run_fortify_scan_ui
+      description: 'REQUIRED: Job name for Fortify Scan UI'
+    STAGE:
+      default: fortify_scan
+      description: 'REQUIRED: Stage name for this job'
+    IMAGE:
+      default: $FORTIFY_IMG
+      description: 'REQUIRED: Docker image to use for Fortify Scan UI'
+    APPLICATION_NAME:
+      default: $MY_FORTIFY_SSC_APP
+      description: 'REQUIRED: Fortify SSC Application Name'
+    VERSION_NAME:
+      default: $MY_FORTIFY_SSC_PV
+      description: 'REQUIRED: Fortify SSC Version Name'
+    FORTIFY_SSC_URL:
+      default: $FORTIFY_SSC_URL
+      description: 'REQUIRED: Fortify SSC URL'
+    FORTIFY_SSC_TOKEN:
+      default: $FORTIFY_SSC_TOKEN
+      description: 'REQUIRED: Fortify SSC Token'
+    SCAN_OPTIONS:
+      default: "--log-file $CI_PROJECT_DIR/fortify.log --output-file $CI_PROJECT_DIR/fortify.fpr"
+      description: 'Optional: Additional scan options'
+
+"$[[ inputs.JOBNAME ]]":
+  stage: $[[ inputs.STAGE ]]
+  image: $[[ inputs.IMAGE ]]
+  environment: $ENV
+  script:
+    - echo "Starting Fortify scan for UI"
+    - export SCANCENTRAL_LOG="$CI_PROJECT_DIR"
+    - export RC=0
+    - cd $CI_PROJECT_DIR/uifolder  # Change to UI folder
+    - scancentral -sscurl "$[[ inputs.FORTIFY_SSC_URL ]]" -ssctoken $[[ inputs.FORTIFY_SSC_TOKEN ]] start -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER" -targs "--build-label $[[ inputs.VERSION_NAME ]] $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER" -exclude '**/**/*.pfx' -exclude '**/**/*.jks' -exclude 'settings.xml' -upload -application "$[[ inputs.APPLICATION_NAME ]]" -version $[[ inputs.VERSION_NAME ]] -uptoken "$[[ inputs.FORTIFY_SSC_TOKEN ]]" $SCANCENTRAL_BUILD_OPTS $[[ inputs.SCAN_OPTIONS ]] --save-package filesscanned.zip 2> scancentral.err || RC=$?
+    - echo "Result from Fortify scan UI - $RC"
+    - ls -lart $CI_PROJECT_DIR  # List project directory to debug
+    - if [ -f "$CI_PROJECT_DIR/scancentral.log" ]; then cat $CI_PROJECT_DIR/scancentral.log; fi  # Display logs if exists
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME =~ /^main/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME !~ /^Release.*/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $FORTIFY_SCAN == "true"'
+
+template
+
+Template Breakdown:
+spec:
+
+inputs: Defines the necessary input variables for the job. Each input includes a default value and a description.
+
+JOBNAME: Customizable job name (e.g., run_fortify_scan_service or run_fortify_scan_ui).
+
+STAGE: Defines the job stage (e.g., fortify_scan).
+
+IMAGE: Docker image to use for the job ($FORTIFY_IMG).
+
+APPLICATION_NAME: Fortify application name.
+
+VERSION_NAME: Fortify version name.
+
+FORTIFY_SSC_URL: Fortify SSC URL.
+
+FORTIFY_SSC_TOKEN: Fortify SSC Token.
+
+SCAN_OPTIONS: Optional scan options (log file, output file, etc.).
+
+Job Configuration:
+
+"$[[ inputs.JOBNAME ]]": The dynamic job name based on inputs.
+
+stage: Job is executed in the fortify_scan stage.
+
+image: The job uses the Docker image defined in inputs.IMAGE.
+
+script: The steps to perform the Fortify scan for service/UI. This includes running scancentral, setting environment variables, and handling results/logs.
+
+rules: Defines the conditions under which the job will run (e.g., on schedule, on push to main branch, on web commit, or via API).
+
+
+
+-----------------------------------------
+webinspect
+
+spec:
+  inputs:
+    JOBNAME:
+      default: run_webinspect_scan
+      description: 'REQUIRED: Job name for WebInspect Scan'
+    STAGE:
+      default: webinspect_scan
+      description: 'REQUIRED: Stage name for this job'
+    IMAGE:
+      default: $FORTIFY_IMG
+      description: 'REQUIRED: Docker image to use for WebInspect Scan'
+    SCANCENTRALCTRL_TOKEN:
+      default: $SCANCENTRALCTRL_TOKEN
+      description: 'REQUIRED: Central Control Token for WebInspect'
+    CICD_IDENTIFIER:
+      default: $CICD_IDENTIFIER
+      description: 'REQUIRED: Unique identifier for the CI/CD pipeline'
+    WEBINSPECT_PACKAGE_URL:
+      default: $WEBINSPECT_PACKAGE_URL
+      description: 'REQUIRED: URL to the WebInspect package'
+    SCAN_OPTIONS:
+      default: "--log-file $CI_PROJECT_DIR/webinspect.log --output-file $CI_PROJECT_DIR/webinspect_fpr"
+      description: 'Optional: Additional scan options'
+
+"$[[ inputs.JOBNAME ]]":
+  stage: $[[ inputs.STAGE ]]
+  image: $[[ inputs.IMAGE ]]
+  environment: $ENV
+  script:
+    - echo "Starting WebInspect scan"
+    - curl -o webinspect.tar "$[[ inputs.WEBINSPECT_PACKAGE_URL ]]"
+    - tar -xvf webinspect.tar
+    - chmod 755 DAST_start_scan.sh
+    - ./DAST_start_scan.sh "${[[ inputs.SCANCENTRALCTRL_TOKEN ]]}" "${[[ inputs.CICD_IDENTIFIER ]]}"
+    - echo "WebInspect scan completed."
+    - if [ -f "$CI_PROJECT_DIR/webinspect.log" ]; then cat $CI_PROJECT_DIR/webinspect.log; fi  # Display logs if exists
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $WEBINSPECT_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME =~ /^main/ && $WEBINSPECT_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME !~ /^Release.*/ && $WEBINSPECT_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $WEBINSPECT_SCAN == "true"'
+
+
+
+
+Template Breakdown:
+spec:
+
+inputs:
+
+JOBNAME: Customizable job name for the WebInspect scan (default: run_webinspect_scan).
+
+STAGE: Defines the job's stage (default: webinspect_scan).
+
+IMAGE: Docker image to use (default: $FORTIFY_IMG).
+
+SCANCENTRALCTRL_TOKEN: Fortify control token for WebInspect.
+
+CICD_IDENTIFIER: Unique identifier for the CI/CD pipeline.
+
+WEBINSPECT_PACKAGE_URL: URL to the WebInspect package.
+
+SCAN_OPTIONS: Optional scan options (e.g., log and output file paths).
+
+Job Configuration:
+
+"$[[ inputs.JOBNAME ]]": Dynamic job name based on the input variable.
+
+stage: Runs in the webinspect_scan stage.
+
+image: The job uses the specified Docker image defined in inputs.IMAGE.
+
+script:
+
+Downloads the WebInspect package from the specified URL.
+
+Extracts and grants execute permissions to the scan script (DAST_start_scan.sh).
+
+Runs the WebInspect scan using the provided control token and CI/CD identifier.
+
+Displays logs if they exist after completion.
+
+rules:
+
+Defines when the job should run based on the pipeline source and WEBINSPECT_SCAN flag
+
+
+----------------------------------------------------------
+
+spec:
+  inputs:
+    JOBNAME:
+      default: run_sonatype_lifecycle_scan
+      description: 'REQUIRED: Job name for Sonatype Lifecycle Scan'
+    STAGE:
+      default: sonatype_lifecycle_scan
+      description: 'REQUIRED: Stage name for this job'
+    IMAGE:
+      default: $SONATYPE_IMG
+      description: 'REQUIRED: Docker image to use for Sonatype Lifecycle Scan'
+    LIFECYCLE_USER:
+      default: $NEXUS_IQ_USERNAME
+      description: 'REQUIRED: Nexus IQ username'
+    LIFECYCLE_PASSWORD:
+      default: $NEXUS_IQ_PASSWORD
+      description: 'REQUIRED: Nexus IQ password'
+    NEXUS_IQ_URL:
+      default: $NEXUS_IQ_URL
+      description: 'REQUIRED: Nexus IQ URL'
+    MY_VERSION:
+      default: $CI_COMMIT_SHORT_SHA
+      description: 'REQUIRED: Commit short SHA version'
+    MY_LIFECYCLE_SSC_APP_ID:
+      default: $MY_LIFECYCLE_SSC_APP_ID
+      description: 'REQUIRED: Lifecycle SSC Application ID'
+    PATH_TO_JAR_OR_ZIP:
+      default: $CI_PROJECT_DIR/dataimportmaintenanceservice
+      description: 'REQUIRED: Path to the artifact (JAR/ZIP) to be scanned'
+
+"$[[ inputs.JOBNAME ]]":
+  stage: $[[ inputs.STAGE ]]
+  image: $[[ inputs.IMAGE ]]
+  environment: $ENV
+  script:
+    - echo "Preparing for Sonatype Lifecycle scan"
+    - echo "Pushing Artifact to Sonatype"
+    - export RC=0
+    - /sonatype/evaluate -i "$[[ inputs.MY_LIFECYCLE_SSC_APP_ID ]]" -s "$[[ inputs.NEXUS_IQ_URL ]]" -a $[[ inputs.LIFECYCLE_USER ]]:$[[ inputs.LIFECYCLE_PASSWORD ]] -t Release "$[[ inputs.PATH_TO_JAR_OR_ZIP ]]" -r lifecycle-results.json || RC=$?
+    - |
+      if [ "$RC" != "0" ]
+      then
+        echo "ERROR - Lifecycle returns $RC"
+        echo "Lifecycle command execution failed"
+        echo "----------------------------- will exit with $RC"
+        exit $RC
+      else
+        echo "Lifecycle command successful"
+      fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME =~ /^main/ && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME !~ /^Release.*/ && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $LIFECYCLE_SCAN == "true"'
+
+"$[[ inputs.JOBNAME ]]_ui":
+  stage: $[[ inputs.STAGE ]]
+  image: $[[ inputs.IMAGE ]]
+  environment: $ENV
+  script:
+    - echo "Preparing for Sonatype Lifecycle scan UI"
+    - echo "Pushing Artifact to Sonatype"
+    - export RC=0
+    - /sonatype/evaluate -i "$[[ inputs.MY_LIFECYCLE_SSC_APP_ID ]]" -s "$[[ inputs.NEXUS_IQ_URL ]]" -a $[[ inputs.LIFECYCLE_USER ]]:$[[ inputs.LIFECYCLE_PASSWORD ]] -t Release "$[[ inputs.PATH_TO_JAR_OR_ZIP ]]" -r lifecycle-ui-results.json || RC=$?
+    - |
+      if [ "$RC" != "0" ]
+      then
+        echo "ERROR - Lifecycle returns $RC"
+        echo "Lifecycle UI command execution failed"
+        echo "----------------------------- will exit with $RC"
+        exit $RC
+      else
+        echo "Lifecycle UI command successful"
+      fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $LIFECYCLE_SCAN_UI == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME =~ /^main/ && $LIFECYCLE_SCAN_UI == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME !~ /^Release.*/ && $LIFECYCLE_SCAN_UI == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $LIFECYCLE_SCAN_UI == "true"'
+
+
+template
+
+
+Template Breakdown:
+spec:
+
+inputs:
+
+JOBNAME: Customizable job name for Sonatype Lifecycle Scan (default: run_sonatype_lifecycle_scan).
+
+STAGE: Defines the job's stage (default: sonatype_lifecycle_scan).
+
+IMAGE: Docker image to use for the scan (default: $SONATYPE_IMG).
+
+LIFECYCLE_USER: Nexus IQ username.
+
+LIFECYCLE_PASSWORD: Nexus IQ password.
+
+NEXUS_IQ_URL: Nexus IQ URL.
+
+MY_VERSION: Commit short SHA version.
+
+MY_LIFECYCLE_SSC_APP_ID: Lifecycle SSC Application ID.
+
+PATH_TO_JAR_OR_ZIP: Path to the artifact (JAR/ZIP) to be scanned.
+
+Job Configuration:
+
+"$[[ inputs.JOBNAME ]]": Dynamic job name based on the input variable.
+
+stage: Runs in the sonatype_lifecycle_scan stage.
+
+image: The job uses the specified Docker image defined in inputs.IMAGE.
+
+script:
+
+Prepares the Sonatype Lifecycle scan by echoing progress and pushing the artifact to Sonatype.
+
+Runs the Sonatype Lifecycle scan using the specified parameters and artifact.
+
+Checks the return code and handles failure or success.
+
+rules:
+
+Defines when the job should run based on the pipeline source and LIFECYCLE_SCAN flag.
+
+Additional Job for UI ("$[[ inputs.JOBNAME ]]_ui"):
+
+A similar configuration as the main scan job but tailored for the UI scan (lifecycle-ui-results.json).
+
+Allows for separate control of the UI and main application scans.
+
+
+
+
+
+
+-----------------------------------------------
+
+
+# .gitlab-ci.yml (Scan Stages)
+#
+variables:
+  # Docker images for scan stages
+  AWSCLI_IMG: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/python/python3.8-awscli-terraform"
+  FORTIFY_IMG: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/fortify/fortify-image:latest"
+  SONATYPE_IMG: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/sonatype/lifecycle-image:latest"
+  WEBINSPECT_IMG: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/webinspect/webinspect-image:latest"
+  DOCKER_DRIVER: overlay2
+  DOCKER_HOST: tcp://docker:2376/
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_TLS_VERIFY: 0
+  DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+
+stages:
+  - build_breaker_scan
+  - fortify-scan
+  - lifecycle_scan
+  - webinspect_scan
+
+include:
+  # Build Breaker Scan
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build-breaker-scan@main
+    inputs:
+      JOBNAME: build-breaker-scan
+      STAGE: build-breaker-scan
+      IMAGE: $AWSCLI_IMG
+      # Add additional inputs if needed
+  
+  # Fortify Scan
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/fortify-scan@main
+    inputs:
+      JOBNAME: fortify-scan
+      STAGE: fortify-scan
+      IMAGE: $FORTIFY_IMG
+      FORTIFY_SSC_TOKEN: $FORTIFY_SSC_TOKEN
+      FORTIFY_PROJECT: $FORTIFY_PROJECT
+      FORTIFY_URL: $FORTIFY_URL
+
+  # WebInspect Scan
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/webinspect-scan@main
+    inputs:
+      JOBNAME: webinspect-scan
+      STAGE: webinspect-scan
+      IMAGE: $WEBINSPECT_IMG
+      SCANCENTRALCTRL_TOKEN: $SCANCENTRALCTRL_TOKEN
+      CICD_IDENTIFIER: $CICD_IDENTIFIER
+      WEBINSPECT_PACKAGE_URL: $WEBINSPECT_PACKAGE_URL
+
+  # Sonatype Lifecycle Scan
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/lifecycle-scan@main
+    inputs:
+      JOBNAME: lifecycle-scan
+      STAGE: lifecycle-scan
+      IMAGE: $SONATYPE_IMG
+      LIFECYCLE_USER: $NEXUS_IQ_USERNAME
+      LIFECYCLE_PASSWORD: $NEXUS_IQ_PASSWORD
+      NEXUS_IQ_URL: $NEXUS_IQ_URL
+      MY_VERSION: $CI_COMMIT_SHORT_SHA
+      MY_LIFECYCLE_SSC_APP_ID: $MY_LIFECYCLE_SSC_APP_ID
+      PATH_TO_JAR_OR_ZIP: $CI_PROJECT_DIR/dataimportmaintenanceservice
+
