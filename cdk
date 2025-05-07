@@ -1,0 +1,1301 @@
+iac-corecdk
+
+variables:
+  # images for stages
+  JAVA_IMG: "fmk.nexus.onefiserv.net/fmk/java/openjdk-17-maven-appsec:FMK-05-02-24"
+  AWSCLI_IMG: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/python/python3.8-awscli-terraform"
+  MKDOCS_IMG: "registry.gitlab.onefiserv.net/mstechpe/iac/core-cdk/mkdocs"
+  #MKDOCS_IMG: "registry.gitlab.onefiserv.net/mstechpe/iac/core-cdk/mkdocs-material:latest"
+  DOCKER_DIND_BASE: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/docker/docker:20.10.16-dind-fiserv-3"
+  CDK_IMG: "fmk.nexus.onefiserv.net/fmk/tools/cdk-node:FMK-25-01-22"
+  
+  # For MKDOCS cluster
+  ECR_NAME: 307946647371.dkr.ecr.us-east-1.amazonaws.com
+  MKDOCS_IMAGE_NAME: dev-mkdocs-repo
+  ECS_CLUSTER_NAME: dev-mkdocs-cluster
+  ECS_SERVICE_NAME: dev-mkdocs-svc
+  ECS_TASK_NAME: dev-mkdocs-svc-td
+  REGION: us-east-1
+
+  # docker variables - required to set for docker env
+  DOCKER_DRIVER: overlay2
+  DOCKER_HOST: tcp://docker:2376/
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_TLS_VERIFY: 0
+  DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+  DOCKER_IMAGE_NAME: core_cdk
+  
+  # Core-CDK
+  CI_REGISTRY_PATH: registry.gitlab.onefiserv.net/mstechpe/iac/core-cdk
+  CI_REGISTRY: registry.gitlab.onefiserv.net
+
+########## MKDOCS #########
+
+stages:
+  - build-mkdocs
+  - build-mkdocs-jar
+  - build-mkdocs-image
+  - deploy-mkdocs-2fargate
+  - validate-core
+  - build-core-image
+
+# build mkdocs
+build-mkdocs:
+  stage: build-mkdocs
+  image: $MKDOCS_IMG
+  script:
+    - cd $CI_PROJECT_DIR/core-docs
+    - echo $PWD
+    - ls $PWD
+    - ls $CI_PROJECT_DIR/core-docs/src/main/resources
+    - mkdocs build -d $CI_PROJECT_DIR/core-docs/src/main/resources/static
+    - ls $CI_PROJECT_DIR/core-docs/src/main/resources/static
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - core-docs/**/*
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/core-docs/src/main/resources/static/*
+
+# build mkdocs jar to be packaged as docker image
+build-mkdocs-jar:
+  stage: build-mkdocs-jar
+  image: $JAVA_IMG
+  script:
+    - ls $CI_PROJECT_DIR/core-docs/src/main/resources/static
+    - echo "Hello, $GITLAB_USER_LOGIN! The CI_PIPELINE_IID is $CI_PIPELINE_IID"
+    - java -version
+    - mvn -version
+    - cd ./core-docs
+    - mvn -X -s settings.xml clean package
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - core-docs/**/*
+  needs:
+    - build-mkdocs
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/core-docs/target/*
+
+# build mkdocs docker image to be deployed on mkdocs cluster
+build-mkdocs-image:
+  stage: build-mkdocs-image
+  image: $DOCKER_DIND_BASE
+  services:
+    - name: $DOCKER_DIND_BASE
+      alias: "docker"
+  script:
+    - . ./utils/aws_credential_from_svc_user.sh
+    - aws sts get-caller-identity
+    - aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_NAME    
+    - docker build --build-arg JRE_IMG="$JAVA_IMG" -t $MKDOCS_IMAGE_NAME:latest . -f core-docs/Dockerfile
+    - docker tag $MKDOCS_IMAGE_NAME:latest $ECR_NAME/$MKDOCS_IMAGE_NAME:latest
+    - docker image push --all-tags $ECR_NAME/$MKDOCS_IMAGE_NAME
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - core-docs/**/*
+  needs:
+    - job: build-mkdocs-jar
+  tags:
+    - docker
+
+# deploy mkdocs image on Fargate cluster
+deploy-mkdocs-2fargate:
+  stage: deploy-mkdocs-2fargate
+  image: $AWSCLI_IMG
+  services:
+    - name: $AWSCLI_IMG
+      alias: "docker"
+  script:
+    - . ./utils/aws_credential_from_svc_user.sh
+    - python3 utils/snapIt.py latest $ECS_CLUSTER_NAME $ECS_SERVICE_NAME $ECS_TASK_NAME $REGION
+    - . ./utils/deployment_trigger_and_stability_check.sh $ECS_CLUSTER_NAME
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - core-docs/**/*
+  needs:
+    - build-mkdocs-image
+  tags:
+    - docker
+
+####### VALIDATE AND BUILD CDK-CORE IMAGE  #######
+validate-core:
+  stage: validate-core
+  image: $CDK_IMG
+  script:
+    - echo $CI_COMMIT_REF_NAME
+    - . ./tests/test_configs.sh
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_MESSAGE !~ /deploy\s*core/'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+build-core-image:
+  stage: build-core-image
+  image: $DOCKER_DIND_BASE
+  # # Set this to set cicd vars for this environment
+  # environment: ${CI_COMMIT_BRANCH}
+  services:
+    - name: $DOCKER_DIND_BASE
+      alias: "docker"
+  script:
+    - CICD_INFO_STR="Build-Number:$CI_PIPELINE_IID   Global-Pipeline-Number:$CI_PIPELINE_ID   Branch-Name:$BRANCH_NAME   Commit-ID:$CI_COMMIT_SHORT_SHA   Pipeline-URL:$CI_PIPELINE_URL"
+    - docker login -u $CI_REGISTRY_USER -p $CI_JOB_TOKEN $CI_REGISTRY
+    - docker build --build-arg CICD_INFO="$CICD_INFO_STR" -t $DOCKER_IMAGE_NAME:latest -t $DOCKER_IMAGE_NAME:$CI_PIPELINE_IID -t $DOCKER_IMAGE_NAME:$CI_COMMIT_BRANCH .
+    - docker tag $DOCKER_IMAGE_NAME:latest $CI_REGISTRY_PATH/$DOCKER_IMAGE_NAME:latest
+    - docker tag $DOCKER_IMAGE_NAME:$CI_COMMIT_BRANCH $CI_REGISTRY_PATH/$DOCKER_IMAGE_NAME:$CI_COMMIT_BRANCH
+    - docker image push --all-tags $CI_REGISTRY_PATH/$DOCKER_IMAGE_NAME
+  rules:
+    - if: '$CI_COMMIT_MESSAGE !~ /deploy\s*core/'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  needs: 
+    - validate-core
+  when: on_success
+  tags:
+    - docker
+
+
+
+
+iac-template:
+
+
+variables:
+  AWSCLI_IMG: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/python/python3.8-awscli-terraform"
+  CDK_CORE_IMG: "registry.gitlab.onefiserv.net/mstechpe/iac/core-cdk/core_cdk:latest"
+  DOCKER_DIND_BASE: "$FISERV_CI_SVC_NEXUS_URL_DOCKER/$FISERV_CI_SVC_NEXUS_URL_DOCKER_REPO/docker/docker:20.10.16-dind-fiserv-3"
+  # docker variables - required to set for docker env
+  DOCKER_DRIVER: overlay2
+  DOCKER_HOST: tcp://docker:2376/
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_TLS_VERIFY: 0
+  DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+
+stages:
+  - plan_stack
+  - plan_all
+  - deploy_stack
+  - ecr_update_image
+  - deploy_all
+  - build_upload_lambda_artifact
+
+#######   TEMPLATES  ##########
+.PlanTemplate: &plan_config
+  script:
+    - source "$CI_PROJECT_DIR/iac-configs/$APP_ID/$ENV.sh"
+    - |
+      if [ -f ./util/aws_credential_from_svc_user.sh ]; then
+        . ./util/aws_credential_from_svc_user.sh
+      else
+        . ./util/aws_credential_from_vault.sh
+      fi
+    
+    - export CI_PROJECT_DIR="$CI_PROJECT_DIR/iac-configs/$APP_ID/$ENV" # this is where the configs are
+    - cd /app # the CDK code is in the /app folder
+    - source /home/cdk/venv/bin/activate
+    - cdk diff --all -c environment=${ENV}
+
+.PlanStackTemplate: &plan_stack_config
+  script:
+    - source "$CI_PROJECT_DIR/iac-configs/$APP_ID/$ENV.sh"
+    - |
+      if [ -f ./util/aws_credential_from_svc_user.sh ]; then
+        . ./util/aws_credential_from_svc_user.sh
+      else
+        . ./util/aws_credential_from_vault.sh
+      fi
+    - export CI_PROJECT_DIR="$CI_PROJECT_DIR/iac-configs/$APP_ID/$ENV" # this is where the configs are
+    - cd /app # the CDK code is in the /app folder
+    - source /home/cdk/venv/bin/activate
+    - cdk diff $ENV-$STACK_NAME --exclusively -c environment=${ENV}
+
+.DeployAllTemplate: &deploy_all_config
+  script:
+    - source "$CI_PROJECT_DIR/iac-configs/$APP_ID/$ENV.sh"
+    - |
+      if [ -f ./util/aws_credential_from_svc_user.sh ]; then
+        . ./util/aws_credential_from_svc_user.sh
+      else
+        . ./util/aws_credential_from_vault.sh
+      fi
+    - export CI_PROJECT_DIR="$CI_PROJECT_DIR/iac-configs/$APP_ID/$ENV" # this is where the configs are
+    - cd /app
+    - source /home/cdk/venv/bin/activate
+    - cdk deploy --all -c environment=$ENV --require-approval never
+
+.DeployStackTemplate: &deploy_stack_config
+  script : 
+    - source "$CI_PROJECT_DIR/iac-configs/$APP_ID/$ENV.sh"
+    - |
+      if [ -f ./util/aws_credential_from_svc_user.sh ]; then
+        . ./util/aws_credential_from_svc_user.sh
+      else
+        . ./util/aws_credential_from_vault.sh
+      fi
+    - export CI_PROJECT_DIR="$CI_PROJECT_DIR/iac-configs/$APP_ID/$ENV" # this is where the configs are
+    - cd /app
+    - source /home/cdk/venv/bin/activate
+    - cdk deploy $ENV-$STACK_NAME --exclusively -c environment=$ENV --require-approval never
+
+.EcrImageUpdate:
+  environment: $ENV
+  stage : ecr_update_image
+  image : $DOCKER_DIND_BASE
+  services:
+    - name: $DOCKER_DIND_BASE
+      alias: "docker"
+  script : 
+    - source "$CI_PROJECT_DIR/iac-configs/$APP_ID/$ENV.sh"
+    - |
+      if [ -f ./util/aws_credential_from_svc_user.sh ]; then
+        . ./util/aws_credential_from_svc_user.sh
+      else
+        . ./util/aws_credential_from_vault.sh
+      fi
+    - jq --version
+    - . ./util/image_check_update.sh
+  when: manual
+  tags:
+    - docker
+
+#### Lambda Source Code Build and Upload
+.BuildUploadLambdaArtifact: 
+  environment: $ENV
+  stage: build_upload_lambda_artifact
+  image: $AWSCLI_IMG
+  variables:
+    LAMBDA_ARTIFACT_NAME: "lambda_artifact.zip"
+  script:
+    - source "$CI_PROJECT_DIR/iac-configs/$APP_ID/$ENV.sh"
+    - . ./util/aws_credential_from_svc_user.sh
+    - cd $CI_PROJECT_DIR/iac-configs/$APP_ID/$LAMBDA_SOURCE_CODE_FOLDER
+    # - source /home/cdk/venv/bin/activate
+    #- python -m pip install --upgrade pip
+    #- pip3 install --target ./package -r requirements.txt
+    - ls
+    - zip -r $CI_PROJECT_DIR/iac-configs/$APP_ID/$LAMBDA_ARTIFACT_NAME ./*
+    
+    - aws s3 cp "$CI_PROJECT_DIR/iac-configs/$APP_ID/$LAMBDA_ARTIFACT_NAME" s3://$S3_ARTIFACT_PATH/
+    - |
+      aws lambda update-function-code \
+      --function-name  $LAMBDA_FUNCTION_NAME \
+      --s3-bucket ${S3_ARTIFACT_PATH%/*} \
+      --s3-key ${S3_ARTIFACT_PATH#*/}/$LAMBDA_ARTIFACT_NAME \
+      --region $aws_region
+
+
+#######   ALL STACKS  ##########
+.PlanAll:
+  environment: $ENV
+  stage : plan_all
+  image : $CDK_CORE_IMG
+  <<: *plan_config 
+  
+.DeployAll:
+  environment: $ENV
+  stage : deploy_all
+  image : $CDK_CORE_IMG
+  <<: *deploy_all_config
+  when: manual
+
+#######   SPECIFIC STACK   ##########
+.PlanStack:
+  environment: $ENV
+  stage : plan_stack
+  image : $CDK_CORE_IMG
+  <<: *plan_stack_config 
+
+.DeployStack:
+  environment: $ENV
+  stage : deploy_stack
+  image : $CDK_CORE_IMG
+  <<: *deploy_stack_config
+  when: manual
+
+
+
+
+testcases:
+
+parent yaml
+
+include:
+  - local: iac-configs/**/*.yml
+  - project: 'mstechpe/iac/corecdk-gitlabci-template'
+    ref: main
+    file: '.gitlab-ci.yml'
+
+
+
+
+child yaml -ecs
+
+# hello-world plan (dev):
+#   extends : .PlanAll
+#   variables:
+#     APP_ID: ecs/hello-world
+#     ENV: "dev"
+#   only:
+#     changes:
+#       - iac-configs/ecs/hello-world/**/*
+
+# hello-world deploy-ecr (dev):
+#   extends : .DeployStack
+#   variables:
+#     APP_ID: ecs/hello-world
+#     ENV: "dev"
+#     STACK_NAME: "hello-world-repo"
+#   needs:
+#     - hello-world plan (dev)
+#   only:
+#     changes:
+#       - iac-configs/ecs/hello-world/**/*
+
+# hello-world ecr-image-update (dev):
+#   extends : .EcrImageUpdate
+#   variables:
+#     APP_ID: ecs/hello-world
+#     ENV: "dev"
+#   needs:
+#     - hello-world deploy-ecr (dev)
+#   only:
+#     changes:
+#       - iac-configs/ecs/hello-world/**/*
+  
+# hello-world deploy-ecs (dev):
+#   extends : .DeployAll
+#   variables:
+#     APP_ID: ecs/hello-world
+#     ENV: "dev"
+#   needs:
+#     - hello-world ecr-image-update (dev)
+#   only:
+#     changes:
+#       - iac-configs/ecs/hello-world/**/*
+
+hello-world plan (qa):
+  extends : .PlanAll
+  variables:
+    APP_ID: ecs/hello-world
+    ENV: "qa"
+  only:
+    changes:
+      - iac-configs/ecs/hello-world/**/*
+
+hello-world deploy-ecr (qa):
+  extends : .DeployStack
+  variables:
+    APP_ID: ecs/hello-world
+    ENV: "qa"
+    STACK_NAME: "hello-world-repo"
+  needs:
+    - hello-world plan (qa)
+  only:
+    changes:
+      - iac-configs/ecs/hello-world/**/*
+
+hello-world ecr-image-update (qa):
+  extends : .EcrImageUpdate
+  variables:
+    APP_ID: ecs/hello-world
+    ENV: "qa"
+  needs:
+    - hello-world deploy-ecr (qa)
+  only:
+    changes:
+      - iac-configs/ecs/hello-world/**/*
+  
+hello-world deploy-ecs (qa):
+  extends : .DeployAll
+  variables:
+    APP_ID: ecs/hello-world
+    ENV: "qa"
+  needs:
+    - hello-world ecr-image-update (qa)
+  only:
+    changes:
+      - iac-configs/ecs/hello-world/**/*
+
+
+v2 version-ecs-----------------------------------------------------------------------
+
+
+{
+    "stack_id": "hello-world",
+    "resource_prefix": "hello-world",
+    "aws_region": "${AWS_DEFAULT_REGION}",
+    "vpc":"${vpc}",
+    "resources":[
+        {
+            "resource_type": "aws_ecs_fargate",
+            "resource_id": "cluster",
+            "services":[
+                {
+                    "resource_id": "svc",
+                    "security_group_id": "${hello-world:sg-for-fargate-svc:sg_id}",
+                    "desired_count": 1,
+                    "vpc_subnets": "${vpc_subnets}",
+                    
+                    "task_definition":
+                    {
+                        "task_role": "${hello-world:task-role:arn}",
+                        "execution_role": "${hello-world:task-execution-role:arn}",
+                        "memory_limit": "${task_memory_limit}",
+                        "cpu": "${task_cpu}",
+                        "containers":[
+                            {
+                                "<-- Will Also be used as lb target -->": null,
+                                "resource_id": "container",
+                                "name_override": null,
+                                "ecr_repo": "qa-hello-world-repo",
+                                "ports": "${ports}",
+                                "memory": "${memory}",
+                                "cpu": "${cpu}",
+                                "log_group": "${hello-world:lg:aws_resource}",
+                                "environment_variables": "${environment_variables}"
+                            }
+                        ]
+                    },
+                    "auto_scaling": "${auto_scaling}"
+                }
+            ]
+        },
+        {
+            "resource_type": "aws_ec2",
+            "resource_id": "sg-for-fargate-svc",
+            "allow_all_outbound": true,
+            "ingress": "${ingress}"
+        },
+        {
+            "resource_type": "aws_logs",
+            "resource_id": "lg",
+            "subscription_filter_arn": "${subscription_filter_arn}"
+        },
+        {
+            "resource_type": "aws_iam",
+            "resource_id": "task-execution-role",
+            "assume_role_principal": "ecs-tasks.amazonaws.com",
+            "policies": "${ter_policies}"
+
+        },
+        {
+            "resource_type": "aws_iam",
+            "resource_id": "task-role",
+            "assume_role_principal": "ecs-tasks.amazonaws.com",
+            "policies": "${tr_policies}"
+        }
+        
+    ]
+}
+
+ecr-------------------------------------------------------------------------
+{
+    "stack_id": "hello-world-repo",
+    "resource_prefix": "hello-world",
+    "aws_region": "${AWS_DEFAULT_REGION}",
+    "vpc":"${vpc}",
+    "resources":[
+        {
+            "resource_type": "aws_ecr",
+            "resource_id": "repo",
+            "image_scan_on_push": true
+        }
+    ]
+}
+
+lb-----------------------------------------------------------------------------
+
+
+{
+    "stack_id": "hello-world-lb",
+    "resource_prefix": "hello-world",
+    "aws_region": "${AWS_DEFAULT_REGION}",
+    "vpc": "${vpc}",
+    "resources":[
+        {
+            "resource_type": "aws_elbv2",
+            "resource_id": "lb",
+            "existing_alb_arn": "${existing_alb_arn}",
+            "listeners":[
+                {
+                    "existing_listener_arn": "${existing_listener_arn}",
+                    "security_group_id_for_existing_listener": "${security_group_id_for_existing_listener}",
+                    "rules": [
+                        {
+                            "priority": "${priority}",
+                            "id": "rule",
+                            "rule_conditions": "${rule_conditions}",
+                            "target_groups": [
+                                {
+                                    "id": "tg",
+                                    "name_override": "${tg_name_override}",
+                                    "port": "${tg_port}",
+                                    "health_check": "/v1/healthcheck",
+                                    "protocol": "HTTP",
+                                    "target_type": "IP",
+                                    "target": "${hello-world:cluster:lb_targets[container]}"
+                                }
+                            ]
+                        }
+                    ] 
+                }
+            ]
+        },
+        {
+            "resource_type": "aws_route53",
+            "resource_id": "rte53",
+            "zone_id": "${zone_id}",
+            "zone_name": "${zone_name}",
+            "records":[
+                {
+                    "record_type": "A",
+                    "record_name": "${record_name}",
+                    "load_balancer": "${hello-world-lb:lb:aws_resource}"
+                }
+            ]
+        }
+    ]
+}
+
+stages---------------------------------------------------------------------------------------------------------------
+
+dev-----------------
+
+export AWS_DEFAULT_REGION="us-east-1"
+export ENV="dev"
+# Location of hello_world_reg, aws=means aws account's selected region has java17_template_port9000 ecr has hw image with tag as  java17_template_port9000 and latest
+# glr=IAC app config project should have CI_REGISTRY_USER and CI_JOB_TOKEN CICD variable updated with authorized user of https://gitlab.onefiserv.net/mstechpe/iac/core-cdk repo
+export hello_world_reg_loc="glr"
+
+export aws_region="us-east-1"
+export aws_account=307946647371
+
+export vpc='{
+            "name" : "vpc",
+            "id" : "vpc-09dbbd21666a59676"
+       }'
+#svc
+export vpc_subnets='[
+                        {
+                            "id": "subnet-02feacfc92065d933",
+                            "zone": "us-east-1a"
+                        },
+                        {
+                            "id": "subnet-002e3cbbeeef079e9",
+                            "zone": "us-east-1b"
+                        }
+                    ]'
+export auto_scaling='{
+                            "min_capacity": 1,
+                            "max_capacity": 4,
+                            "cpu_target_utilization": 70,
+                            "cpu_scale_in_cooldown": 300,
+                            "cpu_scale_out_cooldown": 300,
+                            "mem_target_utilization": 70,
+                            "mem_scale_in_cooldown": 300,
+                            "mem_scale_out_cooldown": 300
+                    }'                   
+#task
+export task_memory_limit=8192
+export task_cpu=2048
+#container
+export ports='[9000]'
+export memory=512
+export cpu=1024
+export environment_variables='[
+                                {"APP_ENV":"dev"},
+                                {"application_name":"hello-world"},
+                                {"created_by":"mukesh.kumar4@fiserv.com"}
+                               ]'
+#sg-svc
+export ingress='[{
+                    "type": "construct",
+                    "peer": "sg-0e83d2e60a0757493",
+                    "port": 9000
+                }]'
+
+#lg
+export subscription_filter_arn="arn:aws:logs:us-east-1:871681779858:destination:6f8c45cc-97d5-4fc6-9165-18fea6640d16"
+#task-execution-role
+export ter_policies='[{
+                        "inline_policies":[
+                            {
+                                "name" : "fargate-tsk-exec-policy",
+                                "path": "policies/fargate-task-execution-policy.json"
+                            }
+                        ]
+                    }]'
+#task-role
+export tr_policies='[{
+                        "inline_policies":[
+                            {
+                                "name" : "fargate-tsk-policy",
+                                "path": "policies/fargate-task-policy.json"
+                            }
+                        ]
+                    }]'
+#lb
+export existing_alb_arn="arn:aws:elasticloadbalancing:us-east-1:307946647371:loadbalancer/app/non-prod-mtpe-alb-rt/b87b0b7c87338e9d"
+export existing_listener_arn="arn:aws:elasticloadbalancing:us-east-1:307946647371:listener/app/non-prod-mtpe-alb-rt/b87b0b7c87338e9d/d199fb35e38dc371"
+export security_group_id_for_existing_listener="sg-0e83d2e60a0757493"
+#rule
+export priority=102
+export rule_conditions='[
+                            {
+                                "host_headers": [
+                                    "dev-hello-world.merch-tech-pe-dev-nonprod.aws.fisv.cloud"
+                                ]
+                            }
+                        ]'
+#tg
+export tg_name_override="dev-hello-world-tg"
+export tg_port=9000
+export tg_health_check="/v1/healthcheck"
+#rte53
+export zone_id="Z0241457EE1P032VHVGN"
+export zone_name="merch-tech-pe-dev-nonprod.aws.fisv.cloud"
+export record_name="dev-hello-world.merch-tech-pe-dev-nonprod.aws.fisv.cloud"
+
+qa------------------------------
+
+export AWS_DEFAULT_REGION="us-east-1"
+export ENV="qa"
+# Location of hello_world_reg, aws=means aws account's selected region has java17_template_port9000 ecr has hw image with tag as  java17_template_port9000 and latest
+# glr=IAC app config project should have CI_REGISTRY_USER and CI_JOB_TOKEN CICD variable updated with authorized user of https://gitlab.onefiserv.net/mstechpe/iac/core-cdk repo
+export hello_world_reg_loc="glr"
+
+export aws_region="us-east-1"
+export aws_account=307946647371
+
+export vpc='{
+            "name" : "vpc",
+            "id" : "vpc-09dbbd21666a59676"
+       }'
+#svc
+export vpc_subnets='[
+                        {
+                            "id": "subnet-02feacfc92065d933",
+                            "zone": "us-east-1a"
+                        },
+                        {
+                            "id": "subnet-002e3cbbeeef079e9",
+                            "zone": "us-east-1b"
+                        }
+                    ]'
+export auto_scaling='{
+                            "min_capacity": 1,
+                            "max_capacity": 4,
+                            "cpu_target_utilization": 70,
+                            "cpu_scale_in_cooldown": 300,
+                            "cpu_scale_out_cooldown": 300,
+                            "mem_target_utilization": 70,
+                            "mem_scale_in_cooldown": 300,
+                            "mem_scale_out_cooldown": 300
+                    }'                   
+#task
+export task_memory_limit=8192
+export task_cpu=2048
+#container
+export ports='[9000]'
+export memory=512
+export cpu=1024
+export environment_variables='[
+                                {"APP_ENV":"qa"},
+                                {"application_name":"hello-world"},
+                                {"created_by":"mukesh.kumar4@fiserv.com"}
+                               ]'
+#sg-svc
+export ingress='[{
+                    "type": "construct",
+                    "peer": "sg-0e83d2e60a0757493",
+                    "port": 9000
+                }]'
+
+#lg
+export subscription_filter_arn="arn:aws:logs:us-east-1:871681779858:destination:6f8c45cc-97d5-4fc6-9165-18fea6640d16"
+#task-execution-role
+export ter_policies='[{
+                        "inline_policies":[
+                            {
+                                "name" : "fargate-tsk-exec-policy",
+                                "path": "policies/fargate-task-execution-policy.json"
+                            }
+                        ]
+                    }]'
+#task-role
+export tr_policies='[{
+                        "inline_policies":[
+                            {
+                                "name" : "fargate-tsk-policy",
+                                "path": "policies/fargate-task-policy.json"
+                            }
+                        ]
+                    }]'
+#lb
+export existing_alb_arn="arn:aws:elasticloadbalancing:us-east-1:307946647371:loadbalancer/app/non-prod-mtpe-alb-rt/b87b0b7c87338e9d"
+export existing_listener_arn="arn:aws:elasticloadbalancing:us-east-1:307946647371:listener/app/non-prod-mtpe-alb-rt/b87b0b7c87338e9d/d199fb35e38dc371"
+export security_group_id_for_existing_listener="sg-0e83d2e60a0757493"
+#rule
+export priority=103
+export rule_conditions='[
+                            {
+                                "host_headers": [
+                                    "qa-hello-world.merch-tech-pe-dev-nonprod.aws.fisv.cloud"
+                                ]
+                            }
+                        ]'
+#tg
+export tg_name_override="qa-hello-world-tg"
+export tg_port=9000
+export tg_health_check="/v1/healthcheck"
+#rte53
+export zone_id="Z0241457EE1P032VHVGN"
+export zone_name="merch-tech-pe-dev-nonprod.aws.fisv.cloud"
+export record_name="qa-hello-world.merch-tech-pe-dev-nonprod.aws.fisv.cloud"
+
+-------------v1 version
+
+{
+    "307946647371":
+    {
+        "stack_id": "hello-world-repo",
+        "resource_prefix": "hello-world",
+        "aws_region": "us-east-1",
+        "vpc":
+        {
+            "name" : "vpc",
+            "id" : "vpc-09dbbd21666a59676"
+        },
+        "resources":[
+            {
+                "resource_type": "aws_ecr",
+                "resource_id": "repo",
+                "name_override": "dev-hello-world-repo",
+                "image_scan_on_push": true
+            }
+        ]
+    }
+}
+
+
+
+v1 version-gitlab ci 
+
+
+# hello-world plan (dev):
+#   extends : .PlanAll
+#   variables:
+#     APP_ID: ecs/hello-world
+#     ENV: "dev"
+#   only:
+#     changes:
+#       - iac-configs/ecs/hello-world/**/*
+
+# hello-world deploy-ecr (dev):
+#   extends : .DeployStack
+#   variables:
+#     APP_ID: ecs/hello-world
+#     ENV: "dev"
+#     STACK_NAME: "hello-world-repo"
+#   needs:
+#     - hello-world plan (dev)
+#   only:
+#     changes:
+#       - iac-configs/ecs/hello-world/**/*
+
+# hello-world ecr-image-update (dev):
+#   extends : .EcrImageUpdate
+#   variables:
+#     APP_ID: ecs/hello-world
+#     ENV: "dev"
+#   needs:
+#     - hello-world deploy-ecr (dev)
+#   only:
+#     changes:
+#       - iac-configs/ecs/hello-world/**/*
+  
+# hello-world deploy-ecs (dev):
+#   extends : .DeployAll
+#   variables:
+#     APP_ID: ecs/hello-world
+#     ENV: "dev"
+#   needs:
+#     - hello-world ecr-image-update (dev)
+#   only:
+#     changes:
+#       - iac-configs/ecs/hello-world/**/*
+
+hello-world plan (qa):
+  extends : .PlanAll
+  variables:
+    APP_ID: ecs/hello-world
+    ENV: "qa"
+  only:
+    changes:
+      - iac-configs/ecs/hello-world/**/*
+
+hello-world deploy-ecr (qa):
+  extends : .DeployStack
+  variables:
+    APP_ID: ecs/hello-world
+    ENV: "qa"
+    STACK_NAME: "hello-world-repo"
+  needs:
+    - hello-world plan (qa)
+  only:
+    changes:
+      - iac-configs/ecs/hello-world/**/*
+
+hello-world ecr-image-update (qa):
+  extends : .EcrImageUpdate
+  variables:
+    APP_ID: ecs/hello-world
+    ENV: "qa"
+  needs:
+    - hello-world deploy-ecr (qa)
+  only:
+    changes:
+      - iac-configs/ecs/hello-world/**/*
+  
+hello-world deploy-ecs (qa):
+  extends : .DeployAll
+  variables:
+    APP_ID: ecs/hello-world
+    ENV: "qa"
+  needs:
+    - hello-world ecr-image-update (qa)
+  only:
+    changes:
+      - iac-configs/ecs/hello-world/**/*
+
+
+
+
+
+
+
+------------------------------------lb(both nlb and alb in (v1,v2)---------------------------------------------------------------
+v1-alb-----------------
+
+{
+    "307946647371":
+    {
+        "stack_id": "mtpe-albs",
+        "resource_prefix": "mtpe",
+        "aws_region": "us-east-1",
+        "vpc":
+        {
+            "name" : "vpc",
+            "id" : "vpc-09dbbd21666a59676"
+        },
+        "resources":[
+            {
+                "resource_type": "aws_elbv2",
+                "resource_id": "alb-nrt",
+                "internet_facing": false,
+                "security_group_id": "${mtpe-albs:sg:sg_id}",
+                "log_bucket": "${mtpe-albs:alb-nrt-log-bucket:aws_resource}",
+                "vpc_subnets": [
+                    {
+                        "id": "subnet-02feacfc92065d933",
+                        "zone": "us-east-1a"
+                    },
+                    {
+                        "id": "subnet-002e3cbbeeef079e9",
+                        "zone": "us-east-1b"
+                    }
+                ],
+                "listeners":[
+                    {
+                        "https_certificate": "arn:aws:acm:us-east-1:307946647371:certificate/c305a2b2-4122-4ae8-a14b-23000287a96f",
+                        "port": 443,
+                        "existing_listener_arn": null,
+                        "security_group_id_for_existing_listener": null
+                    }
+                ]
+            },
+            {
+                "resource_type": "aws_elbv2",
+                "resource_id": "alb-rt",
+                "internet_facing": false,
+                "security_group_id": "${mtpe-albs:sg:sg_id}",
+                "log_bucket": "${mtpe-albs:alb-rt-log-bucket:aws_resource}",
+                "vpc_subnets": [
+                    {
+                        "id":"subnet-05db8f906cc7dceff",
+                        "zone":"us-east-1a"
+                    },
+                    {
+                        "id":"subnet-01b224b78751f803b",
+                        "zone":"us-east-1b"
+                    }
+                ],
+                "listeners":[
+                    {
+                        "https_certificate": "arn:aws:acm:us-east-1:307946647371:certificate/c305a2b2-4122-4ae8-a14b-23000287a96f",
+                        "port": 443,
+                        "existing_listener_arn": null,
+                        "security_group_id_for_existing_listener": null
+                    }
+                ]
+            },
+            {
+                "resource_type": "aws_ec2",
+                "resource_id": "sg",
+                "name_override": "nonprod-mtpe-alb-sg",
+                "allow_all_outbound": true,
+                "ingress":[
+                    {
+                        "type": "ipsource",
+                        "peer": "10.0.0.0/8",
+                        "port": "ALL"
+                    },
+                    {
+                        "type": "ipsource",
+                        "peer": "11.0.0.0/8",
+                        "port": "ALL"
+                    },
+                    {
+                        "type": "ipsource",
+                        "peer": "100.99.0.0/16",
+                        "port": "ALL"
+                    }
+                ]
+            },
+            {
+                "resource_type": "aws_s3",
+                "resource_id": "alb-rt-log-bucket",
+                "name_override": "non-prod-mtpe-alb-rt-log-bucket",
+                "bucket_policy": "policy/s3_policy_rt.json"
+            },
+            {
+                "resource_type": "aws_s3",
+                "resource_id": "alb-nrt-log-bucket",
+                "name_override": "non-prod-mtpe-alb-nrt-log-bucket",
+                "bucket_policy": "policy/s3_policy_nrt.json"
+            }
+            
+        ]
+    }
+}
+
+
+nlb---------
+
+{
+    "307946647371":
+    {
+        "vpc":
+        {
+            "name" : "vpc",
+            "id" : "vpc-09dbbd21666a59676"
+        },
+        "stack_id": "nlb-on-rts-2-msk",
+        "resource_prefix": "nlb-on-rts-2-msk",
+        "aws_region": "us-east-1",
+        "resources":[
+            {
+                "resource_type": "aws_ec2",
+                "resource_id": "sg",
+                "allow_all_outbound": true,
+                "ingress":[
+                    {
+                        "type": "ipsource",
+                        "peer": "11.0.0.0/8",
+                        "port_from": 9000,
+                        "port_to": 9099
+
+                    },
+                    {
+                        "type": "ipsource",
+                        "peer": "10.0.0.0/8",
+                        "port_from": 9000,
+                        "port_to": 9099
+
+                    },
+                    {
+                        "type": "ipsource",
+                        "peer": "11.0.0.0/8",
+                        "port": "ALL",
+                        "<--for ALL ports specify ALL-->": null
+                    },
+                    {
+                        "type": "ipsource",
+                        "peer": "10.0.0.0/8",
+                        "<--for ALL ports specify port ALL-->": null,
+                        "port": "ALL"
+                    }
+                ]
+            },
+            {
+                "resource_type": "aws_s3",
+                "resource_id": "nlb_log_bucket",
+                "name_override": "dev-mstech-nlb-to-msk-log-bucket"
+            },
+            {
+                "resource_type": "aws_elbv2_nlb",
+                "resource_id": "nlb",
+                "name_override": "dev-nlb-on-rts-2-msk",
+                "<--existing_nlb_arn" : null,
+                "security_group_id": "${nlb-on-rts-2-msk:sg:sg_id}",
+                "<-security_group_id->": "sg-0c7afac1e88a1728a",
+                "vpc_subnets": [
+                    {
+                        "id":"subnet-05db8f906cc7dceff",
+                        "zone":"us-east-1a"
+                    },
+                    {
+                        "id":"subnet-01b224b78751f803b",
+                        "zone":"us-east-1b"
+                    }
+                ],
+                "log_bucket": "${nlb-on-rts-2-msk:nlb_log_bucket:aws_resource}"
+            }
+        ]
+    }
+    
+}
+
+ci yaml----------------------------------
+
+############ ALBs STACK #############
+
+albs-mtpe-non-prod-v1 plan (non-prod):
+  extends : .PlanStack
+  variables:
+    APP_ID: "load_balancers/v1"
+    ENV: "non-prod"
+    STACK_NAME: mtpe-albs
+  only:
+    changes:
+      - "iac-configs/load_balancers/v1/**/*"
+
+albs-mtpe-non-prod-v1 deploy (non-prod):
+  extends : .DeployStack
+  variables:
+    APP_ID: "load_balancers/v1"
+    ENV: "non-prod"
+    STACK_NAME: mtpe-albs
+  needs:
+    - albs-mtpe-non-prod-v1 plan (non-prod)
+  only:
+    changes:
+      - "iac-configs/load_balancers/v1/**/*"
+
+
+
+############ NLB STACK #############
+
+nlb-mtpe-non-prod-v1 plan (non-prod):
+  extends : .PlanStack
+  variables:
+    APP_ID: "load_balancers/v1"
+    ENV: "non-prod"
+    STACK_NAME: nlb-on-rts-2-msk
+  only:
+    changes:
+      - "iac-configs/load_balancers/v1/**/*"
+
+nlb-mtpe-non-prod-v1 deploy (non-prod):
+  extends : .DeployStack
+  variables:
+    APP_ID: "load_balancers/v1"
+    ENV: "non-prod"
+    STACK_NAME: nlb-on-rts-2-msk
+  needs:
+    - nlb-mtpe-non-prod-v1 plan (non-prod)
+  only:
+    changes:
+      - "iac-configs/load_balancers/v1/**/*"
+
+
+
+-------------------------------------------v2 version
+
+
+{
+    "stack_id": "mtpe-albs",
+    "resource_prefix": "mtpe",
+    "aws_region": "${aws_region}",
+    "vpc": "${vpc}",
+    "resources":[
+        {
+            "resource_type": "aws_elbv2",
+            "resource_id": "alb-nrt",
+            "internet_facing": false,
+            "security_group_id": "${mtpe-albs:sg:sg_id}",
+            "log_bucket": "${mtpe-albs:alb-nrt-log-bucket:aws_resource}",
+            "vpc_subnets": "${vpc_subnets_nrt}",
+            "listeners":[
+                {
+                    "https_certificate": "${https_certificate}",
+                    "port": 443,
+                    "existing_listener_arn": null,
+                    "security_group_id_for_existing_listener": null
+                }
+            ]
+        },
+        {
+            "resource_type": "aws_elbv2",
+            "resource_id": "alb-rt",
+            "internet_facing": false,
+            "security_group_id": "${mtpe-albs:sg:sg_id}",
+            "log_bucket": "${mtpe-albs:alb-rt-log-bucket:aws_resource}",
+            "vpc_subnets": "${vpc_subnets_rt}",
+            "listeners":[
+                {
+                    "https_certificate": "${https_certificate}",
+                    "port": 443,
+                    "existing_listener_arn": null,
+                    "security_group_id_for_existing_listener": null
+                }
+            ]
+        },
+        {
+            "resource_type": "aws_ec2",
+            "resource_id": "sg",
+            "name_override": "${security_group_name}",
+            "allow_all_outbound": true,
+            "ingress":[
+                {
+                    "type": "ipsource",
+                    "peer": "10.0.0.0/8",
+                    "port": "ALL"
+                },
+                {
+                    "type": "ipsource",
+                    "peer": "11.0.0.0/8",
+                    "port": "ALL"
+                },
+                {
+                    "type": "ipsource",
+                    "peer": "100.99.0.0/16",
+                    "port": "ALL"
+                }
+            ]
+        },
+        {
+            "resource_type": "aws_s3",
+            "resource_id": "alb-rt-log-bucket",
+            "name_override": "${alb_rt_log_s3_bucket_name}",
+            "bucket_policy": "policy/s3_policy_rt.json",
+            "event_bridge_enabled": false
+        },
+        {
+            "resource_type": "aws_s3",
+            "resource_id": "alb-nrt-log-bucket",
+            "name_override": "${alb_nrt_log_s3_bucket_name}",
+            "bucket_policy": "policy/s3_policy_nrt.json",
+            "event_bridge_enabled": false
+        }
+    ]
+    
+}
+
+
+nlb------
+
+
+{
+    "vpc": "${vpc}",
+    "stack_id": "nlb-on-rts-2-msk",
+    "resource_prefix": "nlb-on-rts-2-msk",
+    "aws_region": "${aws_region}",
+    "resources":[
+        {
+            "resource_type": "aws_ec2",
+            "resource_id": "sg",
+            "allow_all_outbound": true,
+            "ingress":[
+                {
+                    "type": "ipsource",
+                    "peer": "11.0.0.0/8",
+                    "port": "ALL",
+                    "<--for ALL ports specify ALL-->": null
+                },
+                {
+                    "type": "ipsource",
+                    "peer": "10.0.0.0/8",
+                    "<--for ALL ports specify port ALL-->": null,
+                    "port": "ALL"
+                }
+            ]
+        },
+        {
+            "resource_type": "aws_s3",
+            "resource_id": "nlb_log_bucket",
+            "name_override": "${nlb_rt_log_s3_bucket_name}",
+            "bucket_policy": "${bucket_policy_file}",
+            "event_bridge_enabled": false
+        },
+        {
+            "resource_type": "aws_elbv2_nlb",
+            "resource_id": "nlb",
+            "name_override": "${nlb_name}",
+            "<--existing_nlb_arn" : null,
+            "security_group_id": "${nlb-on-rts-2-msk:sg:sg_id}",
+            "<-security_group_id->": "sg-0c7afac1e88a1728a",
+            "vpc_subnets": "${vpc_subnets_rt}",
+            "log_bucket": "${nlb-on-rts-2-msk:nlb_log_bucket:aws_resource}"
+        }
+    ]
+}
+
+
+ci yaml--
+
+############ ALBs STACK #############
+
+# albs-mtpe-non-prod-v2 plan (non-prod):
+#   extends : .PlanStack
+#   variables:
+#     APP_ID: "load_balancers/v2"
+#     ENV: "non-prod"
+#     STACK_NAME: mtpe-albs
+#   only:
+#     changes:
+#       - iac-configs/load_balancers/v2/**/*
+
+# albs-mtpe-non-prod-v2 deploy (non-prod):
+#   extends : .DeployStack
+#   variables:
+#     APP_ID: "load_balancers/v2"
+#     ENV: "non-prod"
+#     STACK_NAME: mtpe-albs
+#   needs:
+#     - albs-mtpe-non-prod-v2 plan (non-prod)
+#   only:
+#     changes:
+#       - iac-configs/load_balancers/v2/**/*
+
+
+
+############ NLB STACK #############
+
+# nlb-mtpe-non-prod-v2 plan (non-prod):
+#   extends : .PlanStack
+#   variables:
+#     APP_ID: "load_balancers/v2"
+#     ENV: "non-prod"
+#     STACK_NAME: nlb-on-rts-2-msk
+#   only:
+#     changes:
+#       - iac-configs/load_balancers/v2/**/*
+
+nlb-mtpe-non-prod-v2 deploy (non-prod):
+  extends : .DeployStack
+  variables:
+    APP_ID: "load_balancers/v2"
+    ENV: "non-prod"
+    STACK_NAME: nlb-on-rts-2-msk
+  # needs:
+  #   - nlb-mtpe-non-prod-v2 plan (non-prod)
+  only:
+    changes:
+      - iac-configs/load_balancers/v2/**/*
