@@ -1,0 +1,216 @@
+
+
+fortify-scan:
+  stage: fortify-scan
+  environment: $ENV
+  image: $FMK_FORTIFY_IMAGE
+  needs: 
+    - job: build-jar
+  variables:
+    FORTIFY_SCAN_TAG: "fortify" # name of tag
+    FORTIFY_SCAN_ROOT: $CI_PROJECT_DIR/target # Updated to include the target directory
+    SCANCENTRAL_BUILD_OPTS: "-bt none"
+    MY_VERSION: "MSTECH_HELLOWORLD_DEV"
+  script:
+    - echo "Begin fortify remote translation & scan"
+    - export SCANCENTRAL_LOG="$CI_PROJECT_DIR"
+    - export SCAN_OPTIONS="--log-file $CI_PROJECT_DIR/fortify.log --output-file $CI_PROJECT_DIR/fortify.fpr"
+    - export RC=0
+    - echo "$FORTIFY_SSC_URL","$FORTIFY_SSC_TOKEN","$MY_FORTIFY_SSC_APP","$MY_FORTIFY_SSC_PV","$SCANCENTRAL_BUILD_OPTS","$SCAN_OPTIONS" -application-version "$FOP_VERSION" -uptoken "$FORTIFY_SSC_TOKEN" || cat /root/.fortify/scancentral-24.4.1/log/*.log
+    #- scancentral -sscurl "$FORTIFY_SSC_URL" -ssctoken $FORTIFY_SSC_TOKEN start -bt none -email $APPEMAIL -upload $CI_PROJECT_DIR/target/*.jar # Explicitly include the JAR file
+    - scancentral -sscurl "$FORTIFY_SSC_URL" -ssctoken $FORTIFY_SSC_TOKEN start -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER " -targs "--build-label $MY_VERSION $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER " -exclude '**/**/*.pfx' -exclude '**/**/*.jks' -exclude 'settings.xml' -upload -application "$MY_FORTIFY_SSC_APP" -version $MY_FORTIFY_SSC_PV -uptoken "$FORTIFY_SSC_TOKEN" $SCANCENTRAL_BUILD_OPTS $SCAN_OPTIONS --save-package filesscanned.zip  2> scancentral.err  || RC=$?
+    - echo "result from scancentral - $RC"
+    - ls -lart $CI_PROJECT_DIR
+    - cat $CI_PROJECT_DIR/scancentral.err
+    - if [ -f "$CI_PROJECT_DIR/scancentral.log" ]; then cat $CI_PROJECT_DIR/scancentral.log; fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $FORTIFY_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $FORTIFY_SCAN == "true"'
+
+
+
+
+
+    - echo "result from scancentral - $RC"
+    - ls -lart $CI_PROJECT_DIR
+    - cat $CI_PROJECT_DIR/scancentral.err
+    - if [ -f "$CI_PROJECT_DIR/scancentral.log" ]; then cat $CI_PROJECT_DIR/scancentral.log; fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $FORTIFY_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $FORTIFY_SCAN == "true"'
+
+
+
+
+
+my repo 
+
+spec:
+  inputs:
+    JOBNAME:
+      default: run_fortify_scan_service
+      description: 'REQUIRED: Job name for Fortify Scan Service'
+    STAGE:
+      default: fortify_scan
+      description: 'REQUIRED: Stage name for this job'
+    IMAGE:
+      default: $FORTIFY_IMG
+      description: 'REQUIRED: Docker image to use for Fortify Scan Service'
+    APPLICATION_NAME:
+      default: $MY_FORTIFY_SSC_APP
+      description: 'REQUIRED: Fortify SSC Application Name'
+    VERSION_NAME:
+      default: $MY_FORTIFY_SSC_PV
+      description: 'REQUIRED: Fortify SSC Version Name'
+    FORTIFY_SSC_URL:
+      default: $FORTIFY_SSC_URL
+      description: 'REQUIRED: Fortify SSC URL'
+    FORTIFY_SSC_TOKEN:
+      default: $FORTIFY_SSC_TOKEN
+      description: 'REQUIRED: Fortify SSC Token'
+    SCAN_OPTIONS:
+      default: "--log-file $CI_PROJECT_DIR/fortify.log --output-file $CI_PROJECT_DIR/fortify.fpr"
+      description: 'Optional: Additional scan options'
+
+---      
+
+"$[[ inputs.JOBNAME ]]":
+  stage: $[[ inputs.STAGE ]]
+  image: $[[ inputs.IMAGE ]]
+  environment: $ENV
+  script:
+    - echo "Starting Fortify scan for service"
+    - export SCANCENTRAL_LOG="$CI_PROJECT_DIR"
+    - export RC=0
+    - cd $CI_PROJECT_DIR/servicefolder  # Change to service folder
+    - scancentral -sscurl "$[[ inputs.FORTIFY_SSC_URL ]]" -ssctoken $[[ inputs.FORTIFY_SSC_TOKEN ]] start -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER" -targs "--build-label $[[ inputs.VERSION_NAME ]] $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER" -exclude '**/**/*.pfx' -exclude '**/**/*.jks' -exclude 'settings.xml' -upload -application "$[[ inputs.APPLICATION_NAME ]]" -version $[[ inputs.VERSION_NAME ]] -uptoken "$[[ inputs.FORTIFY_SSC_TOKEN ]]" $SCANCENTRAL_BUILD_OPTS $[[ inputs.SCAN_OPTIONS ]] --save-package filesscanned.zip 2> scancentral.err || RC=$?
+    - echo "Result from Fortify scan service - $RC"
+    - ls -lart $CI_PROJECT_DIR  # List project directory to debug
+    - if [ -f "$CI_PROJECT_DIR/scancentral.log" ]; then cat $CI_PROJECT_DIR/scancentral.log; fi  # Display logs if exists
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME =~ /^main/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME !~ /^Release.*/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $FORTIFY_SCAN == "true"'
+
+
+
+
+---
+
+"$[[ inputs.JOBNAME ]]":
+  stage: $[[ inputs.STAGE ]]
+  image: $[[ inputs.IMAGE ]]
+  environment: $ENV
+  script:
+    - echo "Starting Fortify scan for UI"
+    - export SCANCENTRAL_LOG="$CI_PROJECT_DIR"
+    - export RC=0
+    - cd $CI_PROJECT_DIR/uifolder  # Change to UI folder
+    - scancentral -sscurl "$[[ inputs.FORTIFY_SSC_URL ]]" -ssctoken $[[ inputs.FORTIFY_SSC_TOKEN ]] start -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER" -targs "--build-label $[[ inputs.VERSION_NAME ]] $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER" -exclude '**/**/*.pfx' -exclude '**/**/*.jks' -exclude 'settings.xml' -upload -application "$[[ inputs.APPLICATION_NAME ]]" -version $[[ inputs.VERSION_NAME ]] -uptoken "$[[ inputs.FORTIFY_SSC_TOKEN ]]" $SCANCENTRAL_BUILD_OPTS $[[ inputs.SCAN_OPTIONS ]] --save-package filesscanned.zip 2> scancentral.err || RC=$?
+    - echo "Result from Fortify scan UI - $RC"
+    - ls -lart $CI_PROJECT_DIR  # List project directory to debug
+    - if [ -f "$CI_PROJECT_DIR/scancentral.log" ]; then cat $CI_PROJECT_DIR/scancentral.log; fi  # Display logs if exists
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME =~ /^main/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME !~ /^Release.*/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $FORTIFY_SCAN == "true"'
+    
+    - when: manual
+
+
+
+reference---------------
+
+#
+# fortify-scan.yml
+#
+fortify-scan-service:
+  stage: fortify-scan
+  environment: $ENV
+  #image: nexus.onefiserv.net:8082/guhsdo-u-docker-hosted/appsec/fortify-21.2.3:latest
+  image: $FORTIFY_IMG
+  variables:
+    FORTIFY_SCAN_TAG: "fortify" # name of tag
+    #FORTIFY_SCAN_ROOT: $CI_PROJECT_DIR/sales-regime        # folder to use as root folder for upload
+    FORTIFY_SCAN_ROOT: $CI_PROJECT_DIR # folder to use as root folder for upload
+    #BUILDID: "Catalyst"
+    SCANCENTRAL_BUILD_OPTS: "-bt none"
+    #SCANCENTRAL_BUILD_OPTS: "-b Catalyst"
+    # FORTIFY_SSC_URL and FORTIFY_SSC_TOKEN are expected as GitLab CI/CD Variables (masking recommended)
+    #FORTIFY_SSC_TOKEN: <to be defined>                     # CI token type generated in https://fortify.1dc.com/ssc/html/ssc/admin/tokens
+    #FORTIFY_SSC_URL: "https://fortify.1dc.com/ssc"
+    #
+    # ---  fill these variables in app specific variables
+    #
+    #MY_VERSION: "$CI_COMMIT_SHORT_SHA"                     # suggestion: use UNIQUE_VERSION commit hash
+    MY_VERSION: "$CI_PIPELINE_IID"
+    #MY_FORTIFY_SSC_APP: "UAID-11219" # unique for the application
+    #MY_FORTIFY_SSC_PV: "1.0"
+    #
+  script:
+    - echo "Begin fortify remote translation & scan"
+    - export SCANCENTRAL_LOG="$CI_PROJECT_DIR"
+    - export SCAN_OPTIONS="--log-file $CI_PROJECT_DIR/fortify.log --output-file $CI_PROJECT_DIR/fortify.fpr"
+    - export RC=0
+    - cd $CI_PROJECT_DIR/dataimportmaintenanceservice
+  #  - scancentral arguments -o -targs "--build-label $MY_VERSION $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER -exclude '**/**/*.jks'" -exclude '**/**/*.pfx' -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER -exclude '**/**/*.jks'" 
+    - echo "$FORTIFY_SSC_URL","$FORTIFY_SSC_TOKEN","$MY_FORTIFY_SSC_APP","$MY_FORTIFY_SSC_PV","$SCANCENTRAL_BUILD_OPTS","$SCAN_OPTIONS"
+    - scancentral -sscurl "$FORTIFY_SSC_URL" -ssctoken $FORTIFY_SSC_TOKEN start -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER " -targs "--build-label $MY_VERSION $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER " -exclude '**/**/*.pfx' -exclude '**/**/*.jks' -exclude 'settings.xml' -upload -application "$MY_FORTIFY_SSC_APP" -version $MY_FORTIFY_SSC_PV -uptoken "$FORTIFY_SSC_TOKEN" $SCANCENTRAL_BUILD_OPTS $SCAN_OPTIONS --save-package filesscanned.zip  2> scancentral.err  || RC=$?
+    - echo "result from scancentral - $RC"
+    - ls -lart $CI_PROJECT_DIR
+    - if [ -f "$CI_PROJECT_DIR/scancentral.log" ]; then cat $CI_PROJECT_DIR/scancentral.log; fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $FORTIFY_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $FORTIFY_SCAN == "true"'
+
+fortify-scan-ui:
+  stage: fortify-scan
+  environment: $ENV
+  #image: nexus.onefiserv.net:8082/guhsdo-u-docker-hosted/appsec/fortify-21.2.3:latest
+  image: $FORTIFY_IMG
+  variables:
+    FORTIFY_SCAN_TAG: "fortify" # name of tag
+    #FORTIFY_SCAN_ROOT: $CI_PROJECT_DIR/sales-regime        # folder to use as root folder for upload
+    FORTIFY_SCAN_ROOT: $CI_PROJECT_DIR # folder to use as root folder for upload
+    #BUILDID: "Catalyst"
+    SCANCENTRAL_BUILD_OPTS: "-bt none"
+    #SCANCENTRAL_BUILD_OPTS: "-b Catalyst"
+    # FORTIFY_SSC_URL and FORTIFY_SSC_TOKEN are expected as GitLab CI/CD Variables (masking recommended)
+    #FORTIFY_SSC_TOKEN: <to be defined>                     # CI token type generated in https://fortify.1dc.com/ssc/html/ssc/admin/tokens
+    #FORTIFY_SSC_URL: "https://fortify.1dc.com/ssc"
+    #
+    # ---  fill these variables in app specific variables
+    #
+    #MY_VERSION: "$CI_COMMIT_SHORT_SHA"                     # suggestion: use UNIQUE_VERSION commit hash
+    MY_VERSION: "$CI_PIPELINE_IID"
+    #MY_FORTIFY_SSC_APP: "UAID-11219" # unique for the application
+    #MY_FORTIFY_SSC_PV: "1.0"
+    #
+  script:
+    - echo "Begin fortify remote translation & scan"
+    - export SCANCENTRAL_LOG="$CI_PROJECT_DIR"
+    - export SCAN_OPTIONS="--log-file $CI_PROJECT_DIR/fortify.log --output-file $CI_PROJECT_DIR/fortify.fpr"
+    - export RC=0
+    - cd $CI_PROJECT_DIR/dataimportmaintenanceui
+  #  - scancentral arguments -o -targs "--build-label $MY_VERSION $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER -exclude '**/**/*.jks'" -exclude '**/**/*.pfx' -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER -exclude '**/**/*.jks'" 
+    - echo "$FORTIFY_SSC_URL","$FORTIFY_SSC_TOKEN","$MY_FORTIFY_SSC_APP","$MY_FORTIFY_SSC_PV1","$SCANCENTRAL_BUILD_OPTS","$SCAN_OPTIONS"
+    - scancentral -sscurl "$FORTIFY_SSC_URL" -ssctoken $FORTIFY_SSC_TOKEN start -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER " -targs "--build-label $MY_VERSION $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER " -exclude 'settings.xml' -upload -application "$MY_FORTIFY_SSC_APP" -version $MY_FORTIFY_SSC_PV1 -uptoken "$FORTIFY_SSC_TOKEN" $SCANCENTRAL_BUILD_OPTS $SCAN_OPTIONS --save-package filesscanned.zip  2> scancentral.err  || RC=$?
+    - echo "result from scancentral - $RC"
+    - ls -lart $CI_PROJECT_DIR
+    - if [ -f "$CI_PROJECT_DIR/scancentral.log" ]; then cat $CI_PROJECT_DIR/scancentral.log; fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $FORTIFY_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $FORTIFY_SCAN == "true"'
+
+
+
