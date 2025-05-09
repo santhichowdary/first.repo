@@ -414,3 +414,85 @@ ERROR: Job failed: command terminated with exit code 1
     exit 1
   fi
 
+
+
+
+
+
+
+
+
+
+ci yaml file 
+
+
+# Define the stages of the pipeline
+# CI
+stages:
+  - build-jar
+  #- build-jar-ui
+  #- build_breaker_scan
+  - fortify_scan
+  #- build-jar
+  # Add other stages as needed
+
+ #Set global variables for the pipeline
+variables:
+  BUILD_BREAKER: "true" 
+  FORTIFY_SCAN : "true" 
+  SCANCENTRAL_BUILD_OPTS: "-bt none"
+  SOURCE_NEXUS_REGISTRY: "fmk.nexus.onefiserv.net"
+  FMK_FORTIFY_IMAGE: "$SOURCE_NEXUS_REGISTRY/vendor/docker/fortifydocker/fortify-ci-tools:6.2.0-jdk-17"
+  IMAGE_TAGS: "latest"
+  FORTIFY_SSC_TOKEN: "YzlkZGVjMjgtZThhYS00OTRiLTk4ZjEtMWM4NmYxY2JkYjFj"
+  FORTIFY_SSC_URL: "https://fortify.fiserv.one/ssc"
+  FORTIFY_SSC_APP: "APM0011432"
+  FOP_VERSION:  "MSTECH_HELLOWORLD_DEV"
+  APPEMAIL: santhisri.kankanala@fiserv.com
+
+  #ENV: "test"             # Set the environment (e.g., dev, qa, prod)
+  #FORTIFY_IMG: "fmk.nexus.onefiserv.net/fmk/ext-tools/fortify-22-2-0:FMK-02-23-23"  # Docker image for Fortify
+  #MY_FORTIFY_SSC_APP: "my-sample-app"  # Application name for Fortify
+  #MY_FORTIFY_SSC_PV: "1.0.0"          # Application version for Fortify
+  #BUILD_BREAKER_PACKAGE_URL: "https://example.com/buildbreaker.tar"  # URL to the build breaker package
+
+# Include the build-breaker-scan component
+include:
+  #- component: "$CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build_breaker_scan@cicd-scan-files"
+  #  inputs:
+  #    JOBNAME: build_breaker_scan
+  #    STAGE: build_breaker_scan
+
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build@0.0.1
+    inputs:
+      JOBNAME: build-jar
+      STAGE: build-jar
+      TARGET_PLATFORM: AWS_ECS
+      IMAGE: $JAVA_IMG
+      #NEEDS: []
+      #DEPENDENCIES: []
+      ARTIFACT_FOLDER: [$CI_PROJECT_DIR/target/*]
+
+#  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build-upload@0.0.1
+#    inputs:
+#      JOBNAME: build-docker-image
+#      STAGE: build-docker-image
+#      TARGET_PLATFORM: AWS_ECS
+#      IMAGE: $DOCKER_DIND_BASE
+#      #PACKAGES: (target/first target/second target/third)
+#      NEEDS: [job: build-jar]
+#      DEPENDENCIES: [build-jar]
+#      ARTIFACT_FOLDER: [$CI_PROJECT_DIR/*] 
+    
+
+
+  - component: "$CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/fortify-scan@cicd-scan-files"
+    inputs:
+      JOBNAME: fortify-scan
+      STAGE: fortify_scan    
+      NEEDS: [build-jar]
+      #ENV: "dev"
+      #IMAGE: $FORTIFY_IMG
+      #MY_FORTIFY_SSC_APP: $MY_FORTIFY_SSC_APP
+      #MY_FORTIFY_SSC_PV: $MY_FORTIFY_SSC_PV
+      #BUILD_BREAKER_PACKAGE_URL: $BUILD_BREAKER_PACKAGE_URL
