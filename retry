@@ -496,3 +496,101 @@ include:
       #MY_FORTIFY_SSC_APP: $MY_FORTIFY_SSC_APP
       #MY_FORTIFY_SSC_PV: $MY_FORTIFY_SSC_PV
       #BUILD_BREAKER_PACKAGE_URL: $BUILD_BREAKER_PACKAGE_URL
+
+
+
+
+
+
+
+
+my componnet -------------------------------------------
+
+
+spec:
+  inputs:
+    JOBNAME:
+      default: run_fortify_scan
+      description: 'REQUIRED: Job name for Fortify Scan'
+    STAGE:
+      default: fortify_scan
+      description: 'REQUIRED: Stage name for this job'
+    IMAGE:
+      default: $FORTIFY_IMG
+      description: 'REQUIRED: Docker image to use for Fortify Scan'
+    NEEDS:
+      type: array
+      default: []
+      description: 'OPTIONAL: CICD Pipeline Job Needs'
+  
+    APPLICATION_NAME:
+      default: $MY_FORTIFY_SSC_APP
+      description: 'REQUIRED: Fortify SSC Application Name'
+    VERSION_NAME:
+      default: $MY_FORTIFY_SSC_PV
+      description: 'REQUIRED: Fortify SSC Version Name'
+    FORTIFY_SSC_URL:
+      default: $FORTIFY_SSC_URL
+      description: 'REQUIRED: Fortify SSC URL'
+    FORTIFY_SSC_TOKEN:
+      default: $FORTIFY_SSC_TOKEN
+      description: 'REQUIRED: Fortify SSC Token'
+    SCAN_OPTIONS:
+      default: "--log-file $CI_PROJECT_DIR/fortify.log --output-file $CI_PROJECT_DIR/fortify.fpr"
+      description: 'Optional: Additional scan options'
+    SCAN_TARGET:
+      default: "target"
+      description: 'REQUIRED: Specify the target to scan, either "service" or "ui" or any target directory'
+
+---
+
+$[[ inputs.JOBNAME ]]:
+  stage: $[[ inputs.STAGE ]]
+  image: $[[ inputs.IMAGE ]]
+  needs: $[[ inputs.NEEDS ]]
+  environment: $ENV
+  
+   
+  script:
+    - echo "Starting Fortify scan for $[[ inputs.SCAN_TARGET ]]"
+    - export SCANCENTRAL_LOG="$CI_PROJECT_DIR"
+    - export RC=0
+    - |
+      if [ "$[[ inputs.SCAN_TARGET ]]" == "service" ]; then
+        if [ -d "$CI_PROJECT_DIR/servicefolder" ]; then
+          echo "Switching to service folder"
+          cd "$CI_PROJECT_DIR/servicefolder"  # Change to service folder
+        else
+          echo "Warning: servicefolder not found, staying in root"
+        fi
+
+      elif [ "$[[ inputs.SCAN_TARGET ]]" == "ui" ]; then
+        if [ -d "$CI_PROJECT_DIR/uifolder" ]; then
+          echo "Switching to UI folder"
+          cd "$CI_PROJECT_DIR/uifolder"  # Change to UI folder
+        else
+          echo "Warning: uifolder not found, staying in root"
+        fi
+
+      elif [ "$[[ inputs.SCAN_TARGET ]]" == "target" ]; then
+        if [ -d "$CI_PROJECT_DIR/target" ]; then
+          echo "Switching to target folder"
+          cd "$CI_PROJECT_DIR/target"  # Change to target folder
+        else
+          echo "Warning: target folder not found, staying in root"
+        fi
+
+      else
+        echo "Unknown scan target: $[[ inputs.SCAN_TARGET ]]"
+        exit 1
+      fi
+    - scancentral -sscurl "$[[ inputs.FORTIFY_SSC_URL ]]" -ssctoken "$[[ inputs.FORTIFY_SSC_TOKEN ]]" start -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER" -targs "--build-label $[[ inputs.VERSION_NAME ]] $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER" -exclude '**/**/*.pfx' -exclude '**/**/*.jks' -exclude 'settings.xml' -upload -application "$[[ inputs.APPLICATION_NAME ]]" -version "$[[ inputs.VERSION_NAME ]]" -uptoken "$[[ inputs.FORTIFY_SSC_TOKEN ]]" $SCANCENTRAL_BUILD_OPTS $[[ inputs.SCAN_OPTIONS ]] --save-package filesscanned.zip 2> scancentral.err || RC=$?
+    - echo "Result from Fortify scan - $RC"
+    - ls -lart "$CI_PROJECT_DIR"  # List project directory to debug
+    - if [ -f "$CI_PROJECT_DIR/scancentral.log" ]; then cat "$CI_PROJECT_DIR/scancentral.log"; fi  # Display logs if exists
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME =~ /^main/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME !~ /^Release.*/ && $FORTIFY_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $FORTIFY_SCAN == "true"'
+
