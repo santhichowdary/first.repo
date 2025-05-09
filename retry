@@ -383,3 +383,34 @@ $ if [ "service" == "service" ]; then # collapsed multi-line command
 Cleaning up project directory and file based variables
 00:00
 ERROR: Job failed: command terminated with exit code 1
+
+
+
+
+- |
+  if [ "$[[ inputs.SCAN_TARGET ]]" == "service" ]; then
+    if [ -d "$CI_PROJECT_DIR/servicefolder" ]; then
+      echo "Switching to service folder"
+      cd "$CI_PROJECT_DIR/servicefolder"
+    else
+      echo "Warning: servicefolder not found, staying in root"
+    fi
+  elif [ "$[[ inputs.SCAN_TARGET ]]" == "ui" ]; then
+    if [ -d "$CI_PROJECT_DIR/uifolder" ]; then
+      echo "Switching to ui folder"
+      cd "$CI_PROJECT_DIR/uifolder"
+    else
+      echo "Warning: uifolder not found, staying in root"
+    fi
+  elif [ "$[[ inputs.SCAN_TARGET ]]" == "target" ]; then
+    if [ -d "$CI_PROJECT_DIR/target" ]; then
+      echo "Switching to target folder"
+      cd "$CI_PROJECT_DIR/target"
+    else
+      echo "Warning: target folder not found, staying in root"
+    fi
+  else
+    echo "Unknown scan target: $[[ inputs.SCAN_TARGET ]]"
+    exit 1
+  fi
+
