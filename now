@@ -1,0 +1,69 @@
+#
+# sonatype_lifecycle_scan.yml
+# 
+sonatype_lifecycle_scan_service:
+  stage: sonatype_lifecycle_scan
+  image: $SONATYPE_IMG
+  environment: $ENV
+  variables:
+    LIFECYCLE_USER: $NEXUS_IQ_USERNAME
+    LIFECYCLE_PASSWORD: $NEXUS_IQ_PASSWORD
+    NEXUS_IQ_URL: $NEXUS_IQ_URL
+    MY_VERSION: $CI_COMMIT_SHORT_SHA
+    MY_LIFECYCLE_SSC_APP_ID: $MY_LIFECYCLE_SSC_APP_ID
+    PATH_TO_JAR_OR_ZIP: $CI_PROJECT_DIR/dataimportmaintenanceservice
+  script:
+    - echo "prepare for scan"
+    - echo "Pushing Artifact to sonatype"
+    - export RC=0  
+    - /sonatype/evaluate -i "$MY_LIFECYCLE_SSC_APP_ID" -s "$NEXUS_IQ_URL" -a $LIFECYCLE_USER:$LIFECYCLE_PASSWORD -t Release "$PATH_TO_JAR_OR_ZIP" -r lifecycle-results.json || RC=$?
+    - |
+      if [ "$RC" != "0" ]
+      then
+        echo "ERROR - Lifecycle returns $RC"
+        echo "Lifecycle command execution failed"
+        echo "----------------------------- will exit with $RC"
+        exit $RC
+      else
+        echo "Lifecycle command successfull"
+      fi
+ 
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $LIFECYCLE_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $LIFECYCLE_SCAN == "true"'
+
+sonatype_lifecycle_scan_ui:
+  stage: sonatype_lifecycle_scan
+  image: $SONATYPE_IMG
+  environment: $ENV
+  variables:
+    LIFECYCLE_USER: $NEXUS_IQ_USERNAME
+    LIFECYCLE_PASSWORD: $NEXUS_IQ_PASSWORD
+    NEXUS_IQ_URL: $NEXUS_IQ_URL
+    MY_VERSION: $CI_COMMIT_SHORT_SHA
+    MY_LIFECYCLE_SSC_APP_ID: $MY_LIFECYCLE_SSC_APP_ID1
+    PATH_TO_JAR_OR_ZIP: $CI_PROJECT_DIR/dataimportmaintenanceui
+  script:
+    - echo "prepare for scan"
+    - echo "Pushing Artifact to sonatype"
+    - export RC=0  
+    - /sonatype/evaluate -i "$MY_LIFECYCLE_SSC_APP_ID1" -s "$NEXUS_IQ_URL" -a $LIFECYCLE_USER:$LIFECYCLE_PASSWORD -t Release "$PATH_TO_JAR_OR_ZIP" -r lifecycle-results.json || RC=$?
+    - |
+      if [ "$RC" != "0" ]
+      then
+        echo "ERROR - Lifecycle returns $RC"
+        echo "Lifecycle command execution failed"
+        echo "----------------------------- will exit with $RC"
+        exit $RC
+      else
+        echo "Lifecycle command successfull"
+      fi
+ 
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME  =~ /^main/ && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $LIFECYCLE_SCAN == "true"' 
+    - if: '$CI_PIPELINE_SOURCE == "api" && $LIFECYCLE_SCAN == "true"'
+
