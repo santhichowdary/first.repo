@@ -67,3 +67,164 @@ sonatype_lifecycle_scan_ui:
     - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME  !~ /^Release.*/ && $LIFECYCLE_SCAN == "true"' 
     - if: '$CI_PIPELINE_SOURCE == "api" && $LIFECYCLE_SCAN == "true"'
 
+
+
+
+
+
+
+
+sent-------------------------------------------------------------
+
+# sonatype_lifecycle_scan.yml
+# Reusable GitLab CI component for Sonatype Lifecycle Scan
+
+--spec:
+  inputs:
+    JOBNAME:
+      default: run_sonatype_scan
+      description: 'REQUIRED: Job name for Sonatype Lifecycle Scan'
+
+    STAGE:
+      default: sonatype_scan
+      description: 'REQUIRED: CI stage for this scan'
+
+    IMAGE:
+      default: $SONATYPE_IMG
+      description: 'REQUIRED: Docker image with Sonatype scanner installed'
+
+    NEEDS:
+      type: array
+      default: []
+      description: 'OPTIONAL: Dependencies on previous jobs'
+
+    PATH_TO_ARTIFACT:
+      default: "$CI_PROJECT_DIR/target/my-app.jar"
+      description: 'REQUIRED: Full path to the JAR/ZIP artifact to scan'
+
+    SCAN_TARGET:
+      default: "service"
+      description: 'REQUIRED: Label for identifying the scan target (e.g., service, ui)'
+
+    MY_LIFECYCLE_SSC_APP_ID:
+      default: $MY_LIFECYCLE_SSC_APP_ID
+      description: 'REQUIRED: Sonatype application ID for Lifecycle'
+
+    NEXUS_IQ_URL:
+      default: $NEXUS_IQ_URL
+      description: 'REQUIRED: Sonatype Lifecycle (Nexus IQ) URL'
+
+    LIFECYCLE_USER:
+      default: $NEXUS_IQ_USERNAME
+      description: 'REQUIRED: Sonatype Lifecycle username'
+
+    LIFECYCLE_PASSWORD:
+      default: $NEXUS_IQ_PASSWORD
+      description: 'REQUIRED: Sonatype Lifecycle password'
+
+$[[ inputs.JOBNAME ]]:
+  stage: $[[ inputs.STAGE ]]
+  image: $[[ inputs.IMAGE ]]
+  environment: $ENV
+  needs: $[[ inputs.NEEDS ]]
+
+  script:
+    - echo "🔍 Starting Sonatype Lifecycle Scan for $[[ inputs.SCAN_TARGET ]]"
+    - echo "📦 Scanning artifact at: $[[ inputs.PATH_TO_ARTIFACT ]]"
+    - export RC=0
+    - |
+      /sonatype/evaluate \
+        -i "$[[ inputs.MY_LIFECYCLE_SSC_APP_ID ]]" \
+        -s "$[[ inputs.NEXUS_IQ_URL ]]" \
+        -a "$[[ inputs.LIFECYCLE_USER ]]:$[[ inputs.LIFECYCLE_PASSWORD ]]" \
+        -t Release \
+        "$[[ inputs.PATH_TO_ARTIFACT ]]" \
+        -r "lifecycle-results-$[[ inputs.SCAN_TARGET ]].json" || RC=$?
+
+    - |
+      if [ "$RC" != "0" ]; then
+        echo "❌ Sonatype Lifecycle scan failed with exit code $RC"
+        exit $RC
+      else
+        echo "✅ Sonatype Lifecycle scan completed successfully"
+      fi
+
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME =~ /^main/ && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME !~ /^Release.*/ && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $LIFECYCLE_SCAN == "true"'
+
+
+
+
+
+
+-----------------------------------------ci 
+
+include:
+  - component: path/to/sonatype_lifecycle_scan.yml
+
+sonatype_lifecycle_scan_service:
+  extends: .sonatype_lifecycle_scan
+  variables:
+    JOBNAME: sonatype_lifecycle_scan_service
+    SCAN_TARGET: service
+    PATH_TO_ARTIFACT: $CI_PROJECT_DIR/dataimportmaintenanceservice
+    MY_LIFECYCLE_SSC_APP_ID: $MY_LIFECYCLE_SSC_APP_ID
+
+sonatype_lifecycle_scan_ui:
+  extends: .sonatype_lifecycle_scan
+  variables:
+    JOBNAME: sonatype_lifecycle_scan_ui
+    SCAN_TARGET: ui
+    PATH_TO_ARTIFACT: $CI_PROJECT_DIR/dataimportmaintenanceui
+    MY_LIFECYCLE_SSC_APP_ID: $MY_LIFECYCLE_SSC_APP_ID1
+
+
+
+
+fortify made chnage just compare dont add unless new chnages --------------------------------------------------------
+
+# fortify_scan.yml
+
+.fortify_scan:
+  script:
+    - echo "Starting Fortify scan for $SCAN_TARGET"
+    - export SCANCENTRAL_LOG="$CI_PROJECT_DIR"
+    - export RC=0
+    - |
+      if [ "$SCAN_TARGET" == "service" ]; then
+        if [ -d "$CI_PROJECT_DIR/servicefolder" ]; then
+          echo "Switching to service folder"
+          cd "$CI_PROJECT_DIR/servicefolder"  # Change to service folder
+        else
+          echo "Warning: servicefolder not found, staying in root"
+        fi
+
+      elif [ "$SCAN_TARGET" == "ui" ]; then
+        if [ -d "$CI_PROJECT_DIR/uifolder" ]; then
+          echo "Switching to UI folder"
+          cd "$CI_PROJECT_DIR/uifolder"  # Change to UI folder
+        else
+          echo "Warning: uifolder not found, staying in root"
+        fi
+
+      elif [ "$SCAN_TARGET" == "target" ]; then
+        if [ -d "$CI_PROJECT_DIR/target" ]; then
+          echo "Switching to target folder"
+          cd "$CI_PROJECT_DIR/target"  # Change to target folder
+        else
+          echo "Warning: target folder not found, staying in root"
+        fi
+
+      else
+        echo "Unknown scan target: $SCAN_TARGET"
+        exit 1
+      fi
+
+    - scancentral -sscurl "$FORTIFY_SSC_URL" -ssctoken "$FORTIFY_SSC_TOKEN" start -sargs "$EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER" -targs "--build-label $VERSION_NAME $EXCLUDE_ARGS $MY_FORTIFY_SQL_PARAMETER" -exclude '**/**/*.pfx' -exclude '**/**/*.jks' -exclude 'settings.xml' -upload -application "$APPLICATION_NAME" -version "$VERSION_NAME" -uptoken "$FORTIFY_SSC_TOKEN" $SCANCENTRAL_BUILD_OPTS $SCAN_OPTIONS --save-package filesscanned.zip 2> scancentral.err || RC=$?
+    - echo "Result from Fortify scan - $RC"
+    - ls -lart "$CI_PROJECT_DIR"  # List project directory to debug
+    - if [ -f "$CI_PROJECT_DIR/scancentral.log" ]; then cat "$CI_PROJECT_DIR/scancentral.log"; fi  # Display logs if exists
+
