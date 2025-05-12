@@ -274,3 +274,17 @@ $[[ inputs.JOBNAME ]]:
     - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME !~ /^Release.*/ && $LIFECYCLE_SCAN == "true"'
     - if: '$CI_PIPELINE_SOURCE == "api" && $LIFECYCLE_SCAN == "true"'
 
+
+
+
+
+
+
+
+  script:
+    - echo "Starting Sonatype Lifecycle Scan for $[[ inputs.SCAN_TARGET ]]"
+    - echo "Scanning artifact at: $[[ inputs.PATH_TO_ARTIFACT ]]"
+    - export RC=0
+    - /sonatype/evaluate -i "$[[ inputs.MY_LIFECYCLE_SSC_APP_ID ]]" -s "$[[ inputs.NEXUS_IQ_URL ]]" -a "$[[ inputs.LIFECYCLE_USER ]]:$[[ inputs.LIFECYCLE_PASSWORD ]]" -t Release "$[[ inputs.PATH_TO_ARTIFACT ]]" -r "lifecycle-results-$[[ inputs.SCAN_TARGET ]].json" || RC=$?
+    - 'if [ "$RC" != "0" ]; then echo "Sonatype Lifecycle scan failed with exit code $RC"; exit $RC; else echo "Sonatype Lifecycle scan completed successfully"; fi'
+
