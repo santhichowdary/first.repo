@@ -180,3 +180,97 @@ PATH_TO_ARTIFACT: "$CI_PROJECT_DIR/target/my-app.jar"
       NEXUS_IQ_URL: $NEXUS_IQ_URL
       LIFECYCLE_USER: $NEXUS_IQ_USERNAME
       LIFECYCLE_PASSWORD: $NEXUS_IQ_PASSWORD
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+now sent-------------------
+
+
+spec:
+  inputs:
+    JOBNAME:
+      default: sonatype_scan
+      description: 'REQUIRED: Job name for Sonatype Lifecycle Scan'
+
+    STAGE:
+      default: sonatype_scan
+      description: 'REQUIRED: CI stage for this scan'
+
+    IMAGE:
+      default: $SONATYPE_IMG
+      description: 'REQUIRED: Docker image with Sonatype scanner installed'
+
+    NEEDS:
+      type: array
+      default: []
+      description: 'OPTIONAL: Dependencies on previous jobs'
+
+    PATH_TO_ARTIFACT:
+      default: "$CI_PROJECT_DIR/target/my-app.jar"
+      description: 'REQUIRED: Full path to the JAR/ZIP artifact to scan'
+
+    SCAN_TARGET:
+      default: "service"
+      description: 'REQUIRED: Label for identifying the scan target (e.g., service, ui)'
+
+    MY_LIFECYCLE_SSC_APP_ID:
+      default: $MY_LIFECYCLE_SSC_APP_ID
+      description: 'REQUIRED: Sonatype application ID for Lifecycle'
+
+    NEXUS_IQ_URL:
+      default: $NEXUS_IQ_URL
+      description: 'REQUIRED: Sonatype Lifecycle (Nexus IQ) URL'
+
+    LIFECYCLE_USER:
+      default: $NEXUS_IQ_USERNAME
+      description: 'REQUIRED: Sonatype Lifecycle username'
+
+    LIFECYCLE_PASSWORD:
+      default: $NEXUS_IQ_PASSWORD
+      description: 'REQUIRED: Sonatype Lifecycle password'
+
+$[[ inputs.JOBNAME ]]:
+  stage: $[[ inputs.STAGE ]]
+  image: $[[ inputs.IMAGE ]]
+  environment: $ENV
+  needs: $[[ inputs.NEEDS ]]
+
+  script:
+    - echo "Starting Sonatype Lifecycle Scan for $[[ inputs.SCAN_TARGET ]]"
+    - echo "Scanning artifact at: $[[ inputs.PATH_TO_ARTIFACT ]]"
+    - export RC=0
+    - /sonatype/evaluate \
+        -i "$[[ inputs.MY_LIFECYCLE_SSC_APP_ID ]]" \
+        -s "$[[ inputs.NEXUS_IQ_URL ]]" \
+        -a "$[[ inputs.LIFECYCLE_USER ]]:$[[ inputs.LIFECYCLE_PASSWORD ]]" \
+        -t Release \
+        "$[[ inputs.PATH_TO_ARTIFACT ]]" \
+        -r "lifecycle-results-$[[ inputs.SCAN_TARGET ]].json" || RC=$?
+    - |
+      if [ "$RC" != "0" ]; then
+        echo "Sonatype Lifecycle scan failed with exit code $RC"
+        exit $RC
+      else
+        echo "Sonatype Lifecycle scan completed successfully"
+      fi
+
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME =~ /^main/ && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME !~ /^Release.*/ && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $LIFECYCLE_SCAN == "true"'
+
