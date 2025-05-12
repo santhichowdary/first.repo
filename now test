@@ -1,0 +1,167 @@
+spec:
+  inputs:
+    JOBNAME:
+      default: sonatype_scan
+      description: 'REQUIRED: Job name for Sonatype Lifecycle Scan'
+
+    STAGE:
+      default: sonatype_scan
+      description: 'REQUIRED: CI stage for this scan'
+
+    IMAGE:
+      default: $SONATYPE_IMG
+      description: 'REQUIRED: Docker image with Sonatype scanner installed'
+
+    NEEDS:
+      type: array
+      default: []
+      description: 'OPTIONAL: Dependencies on previous jobs'
+
+    PATH_TO_ARTIFACT:
+      default: "$CI_PROJECT_DIR/target/my-app.jar"
+      description: 'REQUIRED: Full path to the JAR/ZIP artifact to scan'
+
+    SCAN_TARGET:
+      default: "service"
+      description: 'REQUIRED: Label for identifying the scan target (e.g., service, ui)'
+
+    MY_LIFECYCLE_SSC_APP_ID:
+      default: $MY_LIFECYCLE_SSC_APP_ID
+      description: 'REQUIRED: Sonatype application ID for Lifecycle'
+
+    NEXUS_IQ_URL:
+      default: $NEXUS_IQ_URL
+      description: 'REQUIRED: Sonatype Lifecycle (Nexus IQ) URL'
+
+    LIFECYCLE_USER:
+      default: $NEXUS_IQ_USERNAME
+      description: 'REQUIRED: Sonatype Lifecycle username'
+
+    LIFECYCLE_PASSWORD:
+      default: $NEXUS_IQ_PASSWORD
+      description: 'REQUIRED: Sonatype Lifecycle password'
+
+$[[ inputs.JOBNAME ]]:
+  stage: $[[ inputs.STAGE ]]
+  image: $[[ inputs.IMAGE ]]
+  environment: $ENV
+  needs: $[[ inputs.NEEDS ]]
+
+  script:
+    - echo " Starting Sonatype Lifecycle Scan for $[[ inputs.SCAN_TARGET ]]"
+    - echo " Scanning artifact at: $[[ inputs.PATH_TO_ARTIFACT ]]"
+    - export RC=0
+    - |
+      /sonatype/evaluate \
+        -i "$[[ inputs.MY_LIFECYCLE_SSC_APP_ID ]]" \
+        -s "$[[ inputs.NEXUS_IQ_URL ]]" \
+        -a "$[[ inputs.LIFECYCLE_USER ]]:$[[ inputs.LIFECYCLE_PASSWORD ]]" \
+        -t Release \
+        "$[[ inputs.PATH_TO_ARTIFACT ]]" \
+        -r "lifecycle-results-$[[ inputs.SCAN_TARGET ]].json" || RC=$?
+
+    - |
+      if [ "$RC" != "0" ]; then
+        echo " Sonatype Lifecycle scan failed with exit code $RC"
+        exit $RC
+      else
+        echo " Sonatype Lifecycle scan completed successfully"
+      fi
+
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME =~ /^main/ && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME !~ /^Release.*/ && $LIFECYCLE_SCAN == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $LIFECYCLE_SCAN == "true"'
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ci ----------------------------------------------------------------
+
+# Define the stages of the pipeline
+# CI
+stages:
+  - build-jar
+  #- build-jar-ui
+  #- build_breaker_scan
+  #- fortify_scan
+  #- build-jar
+  - sonatype_scan
+  # Add other stages as needed
+
+ #Set global variables for the pipeline
+variables:
+  BUILD_BREAKER: "true" 
+  FORTIFY_SCAN : "true" 
+  SCANCENTRAL_BUILD_OPTS: "-bt none"
+  SOURCE_NEXUS_REGISTRY: "fmk.nexus.onefiserv.net"
+  FMK_FORTIFY_IMAGE: "$SOURCE_NEXUS_REGISTRY/vendor/docker/fortifydocker/fortify-ci-tools:6.2.0-jdk-17"
+  IMAGE_TAGS: "latest"
+  FORTIFY_SSC_TOKEN: "YzlkZGVjMjgtZThhYS00OTRiLTk4ZjEtMWM4NmYxY2JkYjFj"
+  FORTIFY_SSC_URL: "https://fortify.fiserv.one/ssc"
+  FORTIFY_SSC_APP: "APM0011432"
+  FOP_VERSION:  "MSTECH_HELLOWORLD_DEV"
+  APPEMAIL: santhisri.kankanala@fiserv.com
+
+  #ENV: "test"             # Set the environment (e.g., dev, qa, prod)
+  #FORTIFY_IMG: "fmk.nexus.onefiserv.net/fmk/ext-tools/fortify-22-2-0:FMK-02-23-23"  # Docker image for Fortify
+  #MY_FORTIFY_SSC_APP: "my-sample-app"  # Application name for Fortify
+  #MY_FORTIFY_SSC_PV: "1.0.0"          # Application version for Fortify
+  #BUILD_BREAKER_PACKAGE_URL: "https://example.com/buildbreaker.tar"  # URL to the build breaker package
+
+# Include the build-breaker-scan component
+include:
+  #- component: "$CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build_breaker_scan@cicd-scan-files"
+  #  inputs:
+  #    JOBNAME: build_breaker_scan
+  #    STAGE: build_breaker_scan
+
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/build@0.0.1
+    inputs:
+      JOBNAME: build-jar
+      STAGE: build-jar
+      TARGET_PLATFORM: AWS_ECS
+      IMAGE: $JAVA_IMG
+      #NEEDS: []
+      #DEPENDENCIES: []
+      ARTIFACT_FOLDER: [$CI_PROJECT_DIR/target/*]
+
+  - component: $CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/sonatype_lifecycle_scan@cicd-scan-files
+    inputs:
+      JOBNAME: sonatype_scan
+      STAGE: sonatype_scan
+      NEEDS: [job: build-jar]
+#      IMAGE: $DOCKER_DIND_BASE
+#      #PACKAGES: (target/first target/second target/third)
+#      NEEDS: [job: build-jar]
+#      DEPENDENCIES: [build-jar]
+#      ARTIFACT_FOLDER: [$CI_PROJECT_DIR/*] 
+    
+
+
+#  - component: "$CI_SERVER_FQDN/mstechpe/shared-apps/cicd-components/fortify-scan@scanfiles-main"
+#    inputs:
+#      JOBNAME: fortify-scan
+#      STAGE: fortify_scan    
+#      NEEDS: build-jar
+      #ENV: "dev"
+      #IMAGE: $FORTIFY_IMG
+      #MY_FORTIFY_SSC_APP: $MY_FORTIFY_SSC_APP
+      #MY_FORTIFY_SSC_PV: $MY_FORTIFY_SSC_PV
+      #BUILD_BREAKER_PACKAGE_URL: $BUILD_BREAKER_PACKAGE_URL
