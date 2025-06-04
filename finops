@@ -1,0 +1,2068 @@
+
+"""
+script_owner/author:Sriram S
+E-mail:sriram.sundaravaradhan@fiserv.com
+[i] needs mu.py in the same execution directory
+update_rds.py has been created to READ the given rds detail (Default), RESIZE and DELETE it if it is not required.
+Note: DELETE action does not take rds snap shot. So please take the snapshot before executing this acction.
+
+input file format for resizing
+db-instance-1,db.m5.large
+db-instance-2,db.t3.medium
+
+input file format for deleting & read only mode
+db-instance-1
+db-instance-2
+
+Usage Ex:
+1. python update_rds.py -i input.txt
+2. python update_rds.py -i input.txt -a RESIZE/DELETE
+
+Log file is created and appended for every execution in the script's path, file name has respective date/time stamp
+"""
+
+import argparse
+import boto3, requests
+import mpe_utils as mu
+from botocore.exceptions import ClientError
+
+# Initialize a session using Amazon RDS
+rds_client = boto3.client('rds')
+session = boto3.Session()
+compute_optimizer_client = boto3.client('compute-optimizer')
+account_no, AWS_REGION = mu.get_aws_account_id_and_region()
+msg_key = account_no + "_" + AWS_REGION + "_" + mu.get_current_month() + "_RDS_TERMINATION_R"
+msg_value = "Region:" + AWS_REGION 
+def get_rds_instances_for_current_account(input = "ALL",action="READ"):
+    """
+    Get the list of RDS instances for the current AWS account.
+    
+    :param option: Option to filter instances (e.g., 'ALL', 'RUNNING', 'STOPPED').
+    :param connections_count: Number of connections to check.
+    :return: List of RDS instance identifiers.
+    """
+    try:
+        response = rds_client.describe_db_instances()
+        db_instances = response['DBInstances']
+
+        if action == "COUNT":
+            # Count the number of RDS instances
+            instance_count = len(db_instances)
+            
+            return instance_count
+        
+        header_data = ["DBInstanceIdentifier", "DBInstanceClass", "DBInstanceEngine" "DBInstanceStatus", "Average_Connections"]
+        instance_details = []
+        for db_instance in db_instances:
+            instance_id = db_instance['DBInstanceIdentifier']
+            instance_state = db_instance['DBInstanceStatus']
+            instance_class = db_instance['DBInstanceClass']
+            DBInstanceArn = db_instance['DBInstanceArn']
+            # Get the average connections for the RDS instance
+            instance_arn = db_instance['DBInstanceArn']
+            Idle =get_rds_instance_recommendations
+            Avergae_Connections = mu.get_active_db_connections(rds_instance_id=instance_id, days=30)
+            instance_engine = db_instance['Engine']
+            if input == "ALL":
+                instance_details.append([instance_id, instance_class,instance_engine, instance_state, Avergae_Connections])
+        
+        print(f"RDS Instances for current account: {instance_details}")
+        return True
+    except ClientError as e:
+        mu.log_error(f"Error fetching RDS instances: {e}")
+        return False
+
+def get_idle_rds_instances_detail(option="ALL",test="Y"):
+    """
+    Get the list of idle RDS instances and their details.
+    :param option: Option to filter instances (e.g., 'ALL', 'RUNNING', 'STOPPED').
+    :return: List of idle RDS instance identifiers.
+    """
+    global msg_key, msg_value
+    header_data = ["DBInstanceIdentifier", "DBInstanceClass", "DBInstanceEngine", "DBInstanceStatus", "AverageConnections","MaxConnections", "Finding", "SavingsOpportunityAfterDiscounts"]
+    instance_details = []
+    # Create a Boto3 client for Compute Optimizer
+    client = boto3.client('compute-optimizer')
+    # Initialize a list to hold the ARNs
+    rds_instance_arns = []
+
+    # Describe RDS instances
+    response = rds_client.describe_db_instances()
+    DBInstances = response['DBInstances']
+    # Iterate through the instances and collect their ARNs
+    for db_instance in DBInstances:
+        rds_instance_arns.append(db_instance['DBInstanceArn'])
+    # Get recommendations for RDS instances
+    response = client.get_idle_recommendations(
+        resourceArns=rds_instance_arns
+    )
+    total_savingsOpportunityAfterDiscounts = 0
+    # Iterate through the recommendations
+    for recommendation in response['idleRecommendations']:
+        # Check the utilization metrics for idle instances
+        resourceId = recommendation['resourceId']
+        finding = recommendation['finding']
+        savingsOpportunityAfterDiscounts = "$" + str(recommendation['savingsOpportunityAfterDiscounts']["estimatedMonthlySavings"]["value"])
+        total_savingsOpportunityAfterDiscounts += recommendation['savingsOpportunityAfterDiscounts']["estimatedMonthlySavings"]["value"]
+        maxDatabaseConnections = round(recommendation['utilizationMetrics'][1]["value"],2)
+
+        for db_instance in DBInstances:
+            instance_id = db_instance['DBInstanceIdentifier']
+            if instance_id == resourceId:
+                instance_state = db_instance['DBInstanceStatus']
+                instance_class = db_instance['DBInstanceClass']
+                AverageConnections = mu.get_active_db_connections(rds_instance_id=instance_id, days=30)
+                instance_engine = db_instance['Engine']
+                instance_details.append([instance_id, instance_class,instance_engine, instance_state, AverageConnections, maxDatabaseConnections, finding, savingsOpportunityAfterDiscounts])
+        
+    last_6_month_cost = mu.get_monthly_cost(service_name="Amazon Relational Database Service")
+    last_month_cost = "Error"
+    prev_month = mu.get_previous_month()
+    for mandc in last_6_month_cost:
+        if mandc[0] == prev_month:
+            last_month_cost = mandc[1].split("$")[1]
+        else:
+            continue
+    if len(last_6_month_cost) > 0 and last_6_month_cost[0][1] != "$0.0":
+        email_body = "<b>Last 6 months RDS Cost:</b>" 
+
+        email_body = email_body + mu.get_table_html(["Month", "Cost"], last_6_month_cost)  + "<br>"
+    else:
+        email_body = "<b>Last 6 months RDS Cost:</b> This information is currently not available due to some technical issue." + "<br>"
+    
+    recommended_resources_count = str(len(instance_details)) + "/" + str(get_rds_instances_for_current_account(input="ALL",action="COUNT"))
+    email_body += "Count of Recommended RDS Instances for Termination/Total RDS Count: " + "<b>" + recommended_resources_count + "</b>\n\n"
+    
+    msg_value += ",OptimizationName:RDS_TERMINATION,OptimizableResourcesCount:" + recommended_resources_count + ",FinOpsSavingOpportunityIn$:" + str(total_savingsOpportunityAfterDiscounts) + ",FinOpsSavingRecommendationDate:" + mu.get_current_date() + ",LastMonthCostIn$:" + last_month_cost
+    print("msg_key: " + msg_key)
+    print("msg_value: " + msg_value)
+    
+    if len(response['idleRecommendations']) > 0:
+       # mu.write_data_to_confluent_topic(key=msg_key, value=msg_value)
+        table_html = mu.get_table_html(header_data, instance_details)
+        exec_table_html = mu.get_table_html(['Serial Number','DBInstanceIdentifier','No Action(NA))/Termination with Backup Snapshot(TWB)/Just Stop(JS)'], [['1', ' ', ' '],['2', ' ', ' '],['3', ' ', ' ']])
+        
+        email_body += '<br><b>Recommended Action:</b> Idle RDS Instances should be terminated to optimize RDS costs without any backup snapshot created before Termination.'
+        email_body += '<br><b>Recommended Action Execution Plan:</b> Below list of DB Instances will be terminated as per above Recommended Action  excluding received exceptions from you using automation script present at <a href="https://gitlab.onefiserv.net/mstechpe/utils/finopsautomations/-/tree/main">finopsautomations gitlab repo</a>'
+        email_body += table_html
+        email_body += '<p style="color: blue;"><br><b>Exceptions:</b>If you want to exclude any DB Instances from above recommended action, please copy the DBInstanceIdentifier into the table below and select only one action against it.</p>'
+        email_body += exec_table_html
+
+
+
+        if test.upper() == "Y":
+            mu.log_info("Test mode is ON. Sending email to santhisri.kankanala@fiserv.com")  
+            sender_list = "santhisri.kankanala@fiserv.com"
+            cc_list = "@Fiserv.com" 
+        else:
+            acct_no,region = mu.get_aws_account_id_and_region()
+            sender_list,cc_list = mu.get_account_conatct_details(acct_no)
+            mu.log_info("Test mode is OFF. Sending email to " + sender_list)   
+            
+        mu.send_email(email_type="FinOps Recommended Action Report: RDS Termination", sender_list=sender_list, cc_list=cc_list,email_body=email_body,test=test)
+    else:
+        mu.log_info("No RDS Found for Termination")
+ 
+
+
+def get_rds_instance_recommendations():
+    try:
+        # Call the get_rds_instance_recommendations API
+        response = compute_optimizer_client.get_recommendation_summaries()
+        
+        print(f"Response: {response}")
+        # Check if the response contains recommendations
+        
+       
+    
+    except Exception as e:
+        print(f"Error fetching recommendations: {e}")
+
+
+
+def get_instance_details(db_instance_identifier):
+    """
+    Fetch the details of an RDS instance, such as its size, state, Multi-AZ status,
+    and read replica details.
+    
+    :param db_instance_identifier: The identifier of the RDS instance.
+    :return: A tuple with the instance's size, state, Multi-AZ status, read replica status, and source instance identifier if a read replica.
+    """
+    try:
+        response = rds_client.describe_db_instances(DBInstanceIdentifier=db_instance_identifier)
+        db_instance = response['DBInstances'][0]
+        
+        instance_size = db_instance['DBInstanceClass']
+        instance_state = db_instance['DBInstanceStatus']
+        
+        # Debug log all attributes that might indicate the status of Multi-AZ or read replica
+        mu.log_debug(f"Instance attributes: {db_instance}")
+
+        # MultiAZ will be True if the instance is part of a Multi-AZ deployment
+        multi_az = db_instance.get('MultiAZ', False)
+        
+        # If it's a read replica, the 'ReadReplicaSourceDBInstanceIdentifier' field is populated
+        read_replica = db_instance.get('ReadReplicaSourceDBInstanceIdentifier')
+        source_identifier = db_instance.get('ReadReplicaSourceDBInstanceIdentifier', None)
+        
+        # Log additional details for clarity
+        mu.log_debug(f"Multi-AZ: {multi_az}, Read Replica: {read_replica}, Source Identifier: {source_identifier}")
+        
+        return instance_size, instance_state, multi_az, bool(read_replica), source_identifier
+    
+    except ClientError as e:
+        mu.log_error(f"Error fetching details for instance {db_instance_identifier}: {e}")
+        return None, None, None, None, None
+
+def resize_rds_instance(db_instance_identifier, new_instance_type):
+    """
+    Resize the RDS instance to a new instance type.
+    
+    :param db_instance_identifier: The identifier of the RDS instance to resize.
+    :param new_instance_type: The new instance type (e.g., 'db.m5.large', 'db.t3.medium').
+    """
+    instance_size, instance_state, multi_az, is_read_replica, source_identifier = get_instance_details(db_instance_identifier)
+    
+    if instance_size is None:
+        return
+
+    mu.log_info(f"Instance {db_instance_identifier} - Current size: {instance_size}, State: {instance_state}, Multi-AZ: {multi_az}.")
+    
+    # Check if the instance is a Multi-AZ instance or a read replica
+    if multi_az or is_read_replica:
+        mu.log_warning(f"Cannot resize Multi-AZ or Read Replica instances directly. Resizing the source instance for read replicas.")
+        if is_read_replica:
+            mu.log_info(f"Attempting to resize the source instance for read replica: {source_identifier}")
+            db_instance_identifier = source_identifier  # Resize the source instance for read replicas
+        
+        # Proceed with resizing the instance (note: it may not apply to Multi-AZ or read replica directly)
+    
+    # Ensure the instance is in a resizable state
+    if instance_state != 'available':
+        mu.log_warning(f"Instance {db_instance_identifier} is not in a resizable state (current state: {instance_state}).")
+        return
+
+    try:
+        # Modify the RDS instance
+        response = rds_client.modify_db_instance(
+            DBInstanceIdentifier=db_instance_identifier,
+            DBInstanceClass=new_instance_type,
+            ApplyImmediately=True  # Apply changes immediately, may cause downtime
+        )
+        mu.log_info(f"Successfully initiated resize of RDS instance {db_instance_identifier} to {new_instance_type}.")
+        mu.log_debug(f"Response: {response}")
+    
+    except ClientError as e:
+        mu.log_error(f"Error resizing RDS instance {db_instance_identifier}: {e}")
+
+def delete_rds_instance(db_instance_identifier,SkipFinalSnapshot=False):
+    """
+    Delete an RDS instance.
+    
+    :param db_instance_identifier: The identifier of the RDS instance to delete.
+    """
+    instance_size, instance_state, multi_az, is_read_replica, source_identifier = get_instance_details(db_instance_identifier)
+    
+    if instance_size is None:
+        return
+
+    mu.log_info(f"Instance {db_instance_identifier} - Current size: {instance_size}, State: {instance_state}, Multi-AZ: {multi_az}.")
+    
+    # Check if the instance is in a deletable state
+    if instance_state != 'available':
+        mu.log_warning(f"Instance {db_instance_identifier} is not in a deletable state (current state: {instance_state}).")
+        return
+
+    try:
+        # Delete the RDS instance
+        response = rds_client.delete_db_instance(
+            DBInstanceIdentifier=db_instance_identifier,
+            SkipFinalSnapshot=SkipFinalSnapshot  # Skip final snapshot before deletion
+        )
+        mu.log_info(f"Successfully initiated deletion of RDS instance {db_instance_identifier}.")
+        mu.log_debug(f"Response: {response}")
+    
+    except ClientError as e:
+        mu.log_error(f"Error deleting RDS instance {db_instance_identifier}: {e}")
+
+def read_rds_instance(db_instance_identifier):
+    """
+    READ an RDS instance.
+    
+    :param db_instance_identifier: The identifier of the RDS instance to get the detail.
+    """
+    instance_size, instance_state, multi_az, is_read_replica, source_identifier = get_instance_details(db_instance_identifier)
+    
+    if instance_size is None:
+        return
+
+    mu.log_info(f"Instance {db_instance_identifier} - Current size: {instance_size}, State: {instance_state}, Multi-AZ: {multi_az}.")
+
+def process_input_file(file_path, action):
+    """
+    Process the input file containing RDS instance IDs and their target instance types or deletion requests.
+    
+    :param file_path: Path to the input file containing instance ID and target size or deletion request.
+    :param action: Action to perform ('RESIZE' or 'DELETE').
+    """
+    try:
+        with open(file_path, 'r') as file:
+            lines = file.readlines()
+        
+        for line in lines:
+            parts = line.strip().split(',')
+            if action == 'RESIZE' and len(parts) == 2:
+                db_instance_id, target_size = parts
+                mu.log_info(f"Processing instance {db_instance_id} with target size {target_size}...")
+                resize_rds_instance(db_instance_id, target_size)
+            elif action == 'DELETE' and len(parts) == 1:
+                db_instance_id = parts[0]
+                mu.log_info(f"Processing instance {db_instance_id} for deletion...")
+                delete_rds_instance(db_instance_id)
+            elif action == 'READ' and len(parts) == 1:
+                db_instance_id = parts[0]
+                mu.log_info(f"Getting instance {db_instance_id} Detail...")
+                read_rds_instance(db_instance_id)
+
+            else:
+                mu.log_warning(f"Skipping invalid line: {line.strip()}")
+    except FileNotFoundError as e:
+        mu.log_error(f"Input file {file_path} not found: {e}")
+    except Exception as e:
+        mu.log_error(f"Error reading input file {file_path}: {e}")
+
+
+def get_rds_recommendation_from_cloudability(input="ALL", action="READ",test="Y"):
+    """
+    Get the list of RDS instances for the current AWS account.
+    
+    :param option: Option to filter instances (e.g., 'ALL', 'RUNNING', 'STOPPED').
+    :param connections_count: Number of connections to check.
+    :return: List of RDS instance identifiers.
+    """
+    ###########################################################################
+    #                   Define Constants & API Endpoint                       #
+    ###########################################################################
+    
+    # Frontdoor Credentials
+    FD_API_PUBLIC_KEY, FD_API_SECRET_KEY = mu.get_cloudability_secrets_by_view(view_name="GBS_ALL")
+    DOMAIN = "firstdata.com"
+    ENV_ID = "8207c224-4499-4cbf-b63d-537d61bb2582"
+    ENV_NAME = "main"
+    
+    # Parameters (all as variables)
+    aws_account_number, region = mu.get_aws_account_id_and_region()
+    vendor_account_ids = aws_account_number
+    basis = "effective"
+    limit = 100000
+    max_recs_per_resource = 1
+    offset = 0
+    product = "rds"   # <--- Now this drives the URL too!
+    duration = "thirty-day"
+    view_id = 1467480
+    accept_format = "text/csv"
+    
+    # API URL for Rightsizing Recommendations (product inserted dynamically)
+    RIGHTSIZING_API_URL = f"https://api.cloudability.com/v3/rightsizing/aws/recommendations/{product}"
+    
+    ###########################################################################
+    #                   Authenticate and Get Token                            #
+    ###########################################################################
+    
+    params = {'keyAccess': FD_API_PUBLIC_KEY, 'keySecret': FD_API_SECRET_KEY}
+    
+    auth_response = requests.post('https://frontdoor.apptio.com/service/apikeylogin', json=params)
+    
+    if auth_response.status_code != 200:
+        print(f'❌ Authentication failed: {auth_response.status_code}')
+        print(auth_response.text)
+        exit()
+    
+    token = auth_response.headers.get('apptio-opentoken')
+    
+    if not token:
+        print("❌ Authentication token not found!")
+        exit()
+    
+    headers = {
+        'apptio-opentoken': token,
+        'Content-Type': 'application/json',
+        'apptio-current-environment': ENV_ID
+    }
+    
+    print("✅ Authentication successful")
+    
+    ###########################################################################
+    #                   Make Rightsizing API Call                             #
+    ###########################################################################
+    
+    # Assemble the parameters into a dictionary
+    api_params = {
+        'vendorAccountIds': vendor_account_ids,
+        'basis': basis,
+        'limit': limit,
+        'maxRecsPerResource': max_recs_per_resource,
+        'offset': offset,
+        'product': product,
+        'duration': duration,
+        'viewId': view_id,
+        'Accept': accept_format
+    }
+    
+    # Make the GET request
+    rightsizing_response = requests.get(RIGHTSIZING_API_URL, headers=headers, params=api_params)
+    
+    if rightsizing_response.status_code != 200:
+        print(f'❌ API call failed: {rightsizing_response.status_code}')
+        print(rightsizing_response.text)
+        exit()
+    
+    print("✅ API call successful")
+
+    header = ["Resource Name", "Engine", "Last Seen", "Idle(%)", "Savings($)", "Savings(%)"]
+    data = []
+
+    rightsizing_response_json = rightsizing_response.json()
+    #print(rightsizing_response.text)
+    accounts_rds = rightsizing_response_json.get('result', [])
+    for account_rds in accounts_rds:
+        account_id = account_rds.get('vendorAccountId')
+        account_name = account_rds.get('accountName')
+        name = account_rds.get('name')
+        lastSeen = account_rds.get('lastSeen')
+        idle = account_rds.get('idle')
+        databaseEngine = account_rds.get('databaseEngine')
+        
+        recommendations = account_rds.get('recommendations', [])
+        storageRecommendations = account_rds.get('storageRecommendations', [])
+        for recommendation in recommendations:
+            action = recommendation.get('action')
+            if action == "Terminate":
+                if len(storageRecommendations)> 0:
+                    savings = round(recommendation.get('savings') + storageRecommendations[0].get('savings'), 2)
+                    savingsPct = recommendation.get('savingsPct') + storageRecommendations[0].get('savingsPct')
+                else:
+                    savings = recommendation.get('savings')
+                    savingsPct = recommendation.get('savingsPct')
+                data.append([name, databaseEngine, lastSeen, idle, savings, savingsPct, action])
+                #print(f"Resource Name: {name}, Engine: {databaseEngine}, Last Seen: {lastSeen}, Idle %: {idle}, Savings($): {savings}, Savings %: {savingsPct}")
+        
+    
+    last_6_month_cost = mu.get_monthly_cost(service_name="Amazon Relational Database Service")
+    if len(last_6_month_cost) > 0 and last_6_month_cost[0][1] != "$0.0":
+        email_body = "<b>Last 6 months RDS Cost:</b>" 
+
+        email_body = email_body + mu.get_table_html(["Month", "Cost"], last_6_month_cost)  + "<br>"
+    else:
+        email_body = "<b>Last 6 months RDS Cost:</b> This information is currently not available due to some technical issue." + "<br>"
+    email_body += "Total Recommended RDS Instances Termination Count: " + "<b>" + str(len(data)) + "/" + str(get_rds_instances_for_current_account(input="ALL",action="COUNT")) + "</b>\n\n"
+    
+    
+    if len(data) > 0:
+        table_html = mu.get_table_html(header, data)
+        
+        email_body += '<br><b>Recommended Action:</b> Idle RDS Instances should be terminated to optimize RDS costs.'
+        email_body += '<p style="color: blue;"><br><b>Exceptions:</b> If you want to exclude any RDS from below recommened list of termination, please reply to this email with the Resource Name(s) or filter criteria you want to exclude with proper justifictaion promptly before next scheduled Recommended Action Execution Date.</p>'
+        email_body += '<br><b>Recommended Action Execution Plan:</b> After below list of RDS to be terminated is reviewed and approevd by Application Owner/SME, Approved Recommended Action with any requested exclusion will be performed by automation script present in <a href="https://gitlab.onefiserv.net/mstechpe/utils/finopsautomations/-/tree/main">finopsautomations gitlab repo</a>'
+        email_body += table_html
+
+
+
+        if test.upper() == "Y":
+            mu.log_info("Test mode is ON. Sending email to santhisri.kankanala@fiserv.com")  
+            sender_list = "santhisri.kankanala@fiserv.com"
+            cc_list = "@Fiserv.com" 
+        else:
+            acct_no,region = mu.get_aws_account_id_and_region()
+            sender_list,cc_list = mu.get_account_conatct_details(acct_no)
+            mu.log_info("Test mode is OFF. Sending email to " + sender_list)   
+            
+        mu.send_email(email_type="FinOps Recommended Action Report: RDS Termination", sender_list=sender_list, cc_list=cc_list,email_body=email_body,test=test)
+    else:
+        mu.log_info("No RDS Found for Termination")
+ 
+
+
+def main():
+    global log_file
+    
+    log_file = mu.setup_logging(True)
+    # Set up command line argument parsing
+    parser = argparse.ArgumentParser(
+        description="This script resizes or deletes AWS RDS instances based on the details provided in the input file.",
+        epilog="Example usage: python py_file.py -i rds_instance_details.txt -a RESIZE --verbose"
+    )
+    
+    parser.add_argument(
+        "-i", "--input", 
+        required=True, 
+        help="Path to the input file containing RDS instance IDs and target sizes. Format: instance_id,target_size (e.g., db-instance-1,db.m5.large)"
+    )
+    
+    parser.add_argument(
+        "-a", "--action", 
+        choices=["RESIZE", "DELETE"], 
+        required=False, 
+        help="Action to perform (e.g., RESIZE or DELETE)."
+    )
+    
+    parser.add_argument(
+        "--verbose", 
+        action="store_true", 
+        help="Enable verbose logging (shows debug-level logs)."
+    )
+    parser.add_argument("-t", "--test", help="When Y passed email sent to santhisri.kankanala@fiserv.com", type= str, default='N')
+    
+    args = parser.parse_args()
+
+    # Set up logging based on the verbosity flag
+    log_file = mu.setup_logging(True)
+    
+    if args.action:
+        mu.log_info(f"Starting RDS instance action: {args.action} from file: {args.input}")
+        #process_input_file(args.input, args.action)
+    else:
+        mu.log_info(f"Getting RDS Detail for current AWS Account based on input {args.input} ...")
+        #get_rds_instances_for_current_account(input=args.input, action="READ")
+        get_rds_recommendation_from_cloudability(input=args.input, action="READ",test=args.test)
+        # Call the function to get RDS instance recommendations
+        #get_rds_instance_recommendations()
+        #print(get_idle_rds_instances())
+        #get_idle_rds_instances_detail(args.input,args.test)
+        
+
+if __name__ == '__main__':
+    main()
+
+
+
+
+
+
+--------------------------------------------------------------------------------------------------
+
+utils.py
+
+
+
+"""script_owner/author:Sriram S
+E-mail:sriram.sundaravaradhan@fiserv.com
+Desc: importable header file - includes logging ability with custom wrappers & account detail logging
+
+(i)calling file needs to call setup_logging() method to log
+
+
+    mpe_utils.setup_logging()
+
+"""
+import logging,sys,json,pandas as pd
+import os
+import pytz
+import boto3
+from datetime import datetime, timedelta
+import inspect,base64
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
+#from confluent_kafka import Producer
+#from confluent_kafka import Consumer,KafkaError
+#import socket
+
+def get_savings_opportunities_for_aws_account():
+    """
+    Retrieves the savings opportunities for an AWS account using the Cost Explorer API.
+    
+    Returns:
+    list: A list of dictionaries containing savings opportunity details.
+    """
+    # Create a Compute Optimizer client
+    client = boto3.client('compute-optimizer')
+    try:
+        # Get recommendation summaries
+        recommendations = client.get_recommendation_summaries(
+            accountIds=[
+                '544643336122', # Replace with your AWS account ID
+            ]
+        )
+        # Print the recommendations
+        print('Estimated Savings Opportunities:')
+        for summary in recommendations['recommendationSummaries']:
+            
+            if summary['recommendationResourceType'] == 'RdsDBInstance':
+                print(f"Resource Type: {summary['recommendationResourceType']}")
+                print(f"Estimated Monthly Savings Amount: ${summary['idleSavingsOpportunity']['estimatedMonthlySavings']['value']}")
+            elif summary['recommendationResourceType'] == 'EcsService':
+                print(f"Resource Type: {summary['recommendationResourceType']}")
+                print(f"Estimated Monthly Savings Amount: ${summary['savingsOpportunity']['estimatedMonthlySavings']['value']}")
+            elif summary['recommendationResourceType'] == 'RdsDBInstanceStorage':
+                print(f"Resource Type: {summary['recommendationResourceType']}")
+                for item in summary['summaries']:
+                    if item['name'] == 'Overprovisioned':
+                        print(f"Estimated Monthly Savings Amount: ${item['value']}")
+            elif summary['recommendationResourceType'] == 'EbsVolume':
+                print(f"Resource Type: {summary['recommendationResourceType']}")
+                print(f"Estimated Monthly Savings Amount: ${summary['idleSavingsOpportunity']['estimatedMonthlySavings']['value']}")
+            elif summary['recommendationResourceType'] == 'Ec2Instance':
+                print(f"Resource Type: {summary['recommendationResourceType']}")
+                print(f"Estimated Monthly Savings Amount: ${summary['aggregatedSavingsOpportunity']['estimatedMonthlySavings']['value']}")
+   
+    except Exception as e:
+        print(f"Error retrieving savings opportunities: {e}")
+        return []   
+
+
+
+
+
+def create_csv_file(file_name, data):
+    """
+    Creates a CSV file with the specified name and data.
+    
+    Args:
+    file_name (str): The name of the CSV file to be created.
+    data (list): A list of lists containing the data to be written to the CSV file.
+    
+    Returns:
+    None
+    """
+    try:
+        # Check if the file already exists
+        if os.path.exists(file_name):
+            print(f"File '{file_name}' already exists. Overwriting...")
+        
+        # Create a DataFrame and write to CSV
+        df = pd.DataFrame(data)
+        df.to_csv(file_name, index=False, header=False)
+        print(f"CSV file '{file_name}' created successfully.")
+        return True
+    except Exception as e:
+        print(f"Error creating CSV file: {e}")
+        return {"Error": str(e)}
+
+def get_current_date():
+    """
+    Returns the current date in the format YYYY-MM-DD.
+    
+    Returns:
+    str: Current date in YYYY-MM-DD format.
+    """
+    current_date = datetime.now()
+    formatted_date = current_date.strftime("%Y-%m-%d")
+    return formatted_date
+
+
+def get_previous_month():   
+    """
+    Returns the previous month in the format YYYY-MM.
+    
+    Returns:
+    str: Previous month in YYYY-MM format.
+    """
+    current_date = datetime.now()
+    first_day_of_current_month = current_date.replace(day=1)
+    last_month = first_day_of_current_month - timedelta(days=1)
+    formatted_date = last_month.strftime("%Y-%m")
+    return formatted_date
+
+def get_current_month():
+    """
+    Returns the current date in the format YYYY-MM-DD.
+    
+    Returns:
+    str: Current date in YYYY-MM-DD format.
+    """
+    current_date = datetime.now()
+    formatted_date = current_date.strftime("%Y-%m")
+    return formatted_date
+
+def get_aae_date():
+    """
+    Returns the current date in the format YYYY-MM-DD.
+    
+    Returns:
+    str: Current date in YYYY-MM-DD format.
+    """
+    account_type = ''
+    account_no, AWS_REGION = get_aws_account_id_and_region()
+    if not account_no:
+        print("AWS Account ID not found. Please check your AWS credentials.")
+        return {"Error": "AWS Account ID not found."}
+    
+    acct_name = get_aws_account_name_by_id(account_no)
+    if 'nonprod' in acct_name.lower():
+        account_type = 'nonprod'
+    else:
+        account_type = 'prod'
+    
+    current_date = datetime.now()
+    if account_type == 'nonprod':
+        # Add 7 days to the current date
+        aae_date = current_date + timedelta(days=7) 
+    else:
+         # Add 14 days to the current date
+        aae_date = current_date + timedelta(days=14) 
+    formatted_aae_date = aae_date.strftime("%m/%d/%Y")
+    return formatted_aae_date
+
+def get_monthly_cost_by_snapshot_id(snapshot_id):
+    """Calculate the  1 month of cost for a specified EBS snapshot using.
+    Note: botocore.errorfactory.AccessDeniedException: An error occurred (AccessDeniedException) when calling the GetProducts operation: You are not authorized to perform this operation. Please contact your AWS account administrator for assistance.
+    Args:
+    snapshot_id (str): The ID of the EBS snapshot for which to retrieve the cost.
+    
+    Returns:
+    monthly_cost (float): The estimated monthly cost of the EBS snapshot in USD.
+    """
+    
+    # Initialize the Boto3 EC2 client
+    acct_no, region = get_aws_account_id_and_region()
+    ec2 = boto3.client('ec2')
+    pricing = boto3.client('pricing', region_name=region)  # Pricing API is only available in us-east-1
+
+
+    response = ec2.describe_snapshots(SnapshotIds=[snapshot_id])
+    snapshot = response['Snapshots'][0]
+    size_gb = snapshot['VolumeSize']  # Size in GB
+   
+    print(f"Snapshot ID: {snapshot_id}, Size in GB: {size_gb}")  # Debugging line to check the snapshot size
+
+    response = pricing.get_products(
+        ServiceCode='AmazonEC2',
+        Filters=[
+            {'Type': 'TERM_MATCH', 'Field': 'productFamily', 'Value': 'Storage'},
+            {'Type': 'TERM_MATCH', 'Field': 'storageMedia', 'Value': 'AmazonEBS'},
+            {'Type': 'TERM_MATCH', 'Field': 'volumeType', 'Value': 'EBS:Snapshot'},
+            {'Type': 'TERM_MATCH', 'Field': 'location', 'Value': region}
+        ],
+        MaxResults=1
+    )
+    print(f"Response from Pricing API: {response}")  # Debugging line to check the response structure
+    return
+    # Parse the pricing information
+    price_list = response['PriceList']
+    price_details = price_list[0]
+    
+    import json
+    price_json = json.loads(price_details)
+    price_per_gb_month = float(price_json['terms']['OnDemand'].values().__iter__().__next__()['priceDimensions'].values().__iter__().__next__()['pricePerUnit']['USD'])
+    
+    # Calculate the monthly cost
+    monthly_cost = size_gb * price_per_gb_month
+
+    print(f'Monthly cost for snapshot {snapshot_id}: ${monthly_cost:.2f}')
+    return monthly_cost
+ 
+def get_monthly_cost(service_name="AmazonCloudWatch"):
+    """Retrieves the last 3 months of cost for a specified AWS service using the Cost Explorer API.
+    Args:
+    service_name (str): The name of the AWS service for which to retrieve the cost. Default is "AmazonCloudWatch".
+    Returns:
+    list: A list containing the last 3 months of costs for the specified service, formatted as [month, cost].
+    """
+    
+    start_date = (datetime.now() - timedelta(days=180)).strftime('%Y-%m-01')  # Start of the month 30 days ago
+    end_date = datetime.now().strftime('%Y-%m-%d')  # Current date
+
+    
+    client = boto3.client('ce')  # Cost Explorer client
+    try:
+        if service_name and service_name.strip() == "AmazonCloudWatch":
+            response = client.get_cost_and_usage(
+                TimePeriod={
+                    'Start': start_date,
+                    'End': end_date
+                },
+                Granularity='MONTHLY',
+                Filter={
+                    'Dimensions': {
+                        'Key': 'SERVICE',
+                        'Values': [service_name]
+                    }
+                },
+                Metrics=['UnblendedCost']
+            )
+        elif  "SnapshotUsage" in service_name :
+            response = client.get_cost_and_usage(
+                TimePeriod={
+                    'Start': start_date,
+                    'End': end_date
+                },
+                Granularity='MONTHLY',
+                Filter={
+                    'Dimensions': {
+                        'Key': 'USAGE_TYPE',
+                        'Values': [service_name]
+                    }
+                },
+                Metrics=['UnblendedCost']
+            )
+        elif service_name and service_name.strip() == "Amazon Relational Database Service":
+            response = client.get_cost_and_usage(
+                TimePeriod={
+                    'Start': start_date,
+                    'End': end_date
+                },
+                Granularity='MONTHLY',
+                Filter={
+                    'Dimensions': {
+                        'Key': 'SERVICE',
+                        'Values': [service_name]
+                    }
+                },
+                Metrics=['UnblendedCost']
+            )
+    except client.exceptions.InvalidParameterValueException as e:
+        print(f"Invalid parameter value: {e}")
+        return []
+    last_6_mnths_cost = []
+    rec_count = 0
+    #print(response)
+    for result in response['ResultsByTime']:
+        rec_count += 1
+        last_6_mnths_cost.append([result['TimePeriod']['Start'][:-3],"$"+str(round(float(result['Total']['UnblendedCost']['Amount']),2))])
+        #print(f"Billing Period: {result['TimePeriod']['Start']} to {result['TimePeriod']['End']}")
+       # print(f"Monthly cost for {service_name}: ${result['Total']['UnblendedCost']['Amount']}")
+        if rec_count == 6:
+            break
+
+    return last_6_mnths_cost[::-1]  # Reverse the list to show the most recent month first
+
+def get_active_db_connections(rds_instance_id,days=7): 
+    """
+    Retrieves the active database connections for a given RDS instance ID using AWS CloudWatch metrics.
+    Args:       
+    rds_instance_id (str): The RDS instance identifier for which to retrieve active connections.
+    Returns:
+    None: Prints the active database connections for the specified RDS instance.
+    """
+    # Create a CloudWatch client
+    cloudwatch = boto3.client('cloudwatch')
+    # Define the time range for the last month
+    end_time = datetime.now()
+    start_time = end_time - timedelta(days=days)
+
+    # Get the CloudWatch metrics for DatabaseConnections
+    response = cloudwatch.get_metric_statistics(
+        Namespace='AWS/RDS',
+        MetricName='DatabaseConnections',
+        Dimensions=[
+            {'Name': 'DBInstanceIdentifier', 'Value': rds_instance_id}
+        ],
+        StartTime=start_time,
+        EndTime=end_time,
+        Period=86400,  # One data point per day
+        Statistics=['Average']
+    )
+    
+    # Extract the data points
+    connections_data_points = response['Datapoints']
+    if connections_data_points:
+        # for dp in connections_data_points:
+        #     dp['Average'] = round(dp['Average'], 2)
+        # connections_data_points.sort(key=lambda x: x['Timestamp'])
+        # # Print the data points
+        # print(f"Database Connections for instance '{rds_instance_id}' over the last {days} days:")
+        # for dp in connections_data_points:
+        #     print(f"Date: {dp['Timestamp'].strftime('%Y-%m-%d')}, Average Connections: {dp['Average']}")
+        # Calculate the average connections
+        average_connections = sum(dp['Average'] for dp in connections_data_points) / len(connections_data_points)
+        print(f"Average Database Connections for instance '{rds_instance_id}' over the last {days} days: {average_connections:.2f}")
+        return round(average_connections, 2)
+    else:
+        print("No data points found for the specified time range.")
+        return None
+
+
+def get_table_html(header, data):
+    """
+    Generates an HTML table from the provided header and data.
+    
+    Args:
+    header (list): List of column headers for the table.
+    data (list): List of rows, where each row is a list of values.
+    
+    Returns:
+    str: HTML string representing the table.
+    """
+    html = "<table border='1'>\n"
+    html += "<tr bgcolor='#FF6600' style='color: white;' >" + "".join(f"<th>{col}</th>" for col in header) + "</tr>\n"
+    for row in data:
+        html += "<tr>" 
+        for val in row:
+                html += f"<td>{val}</td>"
+        html += "</tr>\n"
+    html += "</table>"
+    return html
+
+def get_aws_account_id_and_region():
+    """Retrieves the AWS account ID and region using the Boto3 library.
+    
+    Returns:
+    tuple: (account_id, region)
+    """
+    # Initialize a Boto3 session
+    session = boto3.Session()
+    
+    # Get the current region
+    region = session.region_name
+
+    # Get the account ID by calling STS
+    sts_client = session.client('sts')
+    account_id = sts_client.get_caller_identity().get('Account')
+
+    return account_id, region
+
+def setup_logging(log_to_console=False):
+    """
+    Sets up logging with a dynamically created log file based on the timestamp 
+    and the name of the calling script. Optionally logs to the console.
+    
+    Args:
+    log_to_console (bool): If True, logs to the console. Default is False.
+    """
+    # Get the calling script's name
+    caller_name = inspect.stack()[1].filename
+    script_name = os.path.basename(caller_name).split('.')[0]
+
+    # Get AWS account ID and region
+    account_id, region = get_aws_account_id_and_region()
+
+    # Setting timezone to IST
+    ist_tz = pytz.timezone('Asia/Kolkata')
+    current_timestamp = datetime.now(ist_tz).strftime('%d-%m-%Y_%H:%M:%S')
+    
+    # Log file will have the timestamp as before
+    log_file = f"{script_name}_{current_timestamp}.log"
+
+    # Set up logging configuration
+    handlers = [logging.FileHandler(log_file)]
+    
+    # If log_to_console is True, add a console handler
+    if log_to_console:
+        handlers.append(logging.StreamHandler())
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=handlers
+    )
+
+    # Log AWS account and region info only once at the start
+    logging.info(f"Logging started for {script_name}. AWS Account ID: {account_id}, Region: {region}")
+    return log_file 
+
+# Wrapper functions for various log levels
+def log_info(message):
+    logging.info(message)
+
+def log_warning(message):
+    logging.warning(message)
+
+def log_error(message):
+    logging.error(message)
+
+def log_debug(message):
+    logging.debug(message)
+
+def log_critical(message):
+    logging.critical(message)
+
+def log_exception(exception):
+    logging.exception(f"An exception occurred: {exception}")
+
+def get_cloudability_secrets_by_view(view_name="GBS_ALL"):
+    """Retrieves the Cloudability secrets for a given view name from a JSON file.
+    Args:
+    view_name (str): The name of the view for which to retrieve secrets. Default is "GBS_ALL".
+    Returns:
+    tuple: A tuple containing the public key and secret key for the specified view.
+    """
+    cloudability_secrets = "./config/cloudability_secrets.json"
+    if not os.path.exists(cloudability_secrets):
+        log_error(f"account contact file not found: {cloudability_secrets}")
+        return ""
+    
+    with open(cloudability_secrets, 'r') as file:
+        try:
+            secrets_data = json.load(file)
+            sec_json = secrets_data.get(view_name, {})
+            if sec_json:
+                pub_key = sec_json.get('FD_API_PUBLIC_KEY', "")
+                sec_key = sec_json.get('FD_API_SECRET_KEY', "")
+
+                return pub_key, sec_key
+        except json.JSONDecodeError as e:
+            log_exception(e)
+            return "",""
+
+def get_accounts_for_gbs_org(detail_type="all",chris_direct_name=""):    
+    """Retrieves the AWS accounts for the GBS organization from a JSON file."""
+
+    gbs_accounts_file = "./config/monthly_report_mapings.json"
+    if not os.path.exists(gbs_accounts_file):
+        log_error(f"GBS accounts file not found: {gbs_accounts_file}")
+        return []
+    
+    accounts_list = []
+    with open(gbs_accounts_file, 'r') as file:
+        try:
+            accounts_data = json.load(file)
+            if detail_type == "all":
+                return accounts_data
+            elif detail_type == "chris_directs":
+                return list(accounts_data.keys())
+            elif detail_type == "accounts":
+                for chris_direct in list(accounts_data.keys()):
+                    cd_json = accounts_data.get(chris_direct, {})
+                    if cd_json:
+                        accounts = cd_json.get('accounts', "")
+                        if accounts:
+                            accounts_list.extend(accounts)
+                return accounts_list
+            elif detail_type == "chris_direct_accounts" and chris_direct_name:
+                
+                cd_json = accounts_data.get(chris_direct_name, {})
+                if cd_json:
+                    accounts = cd_json.get('accounts', "")
+                    if accounts:
+                        accounts_list.extend(accounts)
+                return accounts_list
+            elif detail_type == "report_data_keys":
+                report_data_keys = accounts_data.get('pradeep.pai@Fiserv.com', {}).get('report_data_keys', [])
+                return report_data_keys
+                
+            else:
+                log_error(f"Invalid detail_type: {detail_type}. Expected 'all' or 'account_ids'.")
+                return []
+        except json.JSONDecodeError as e:
+            log_exception(e)
+            return []
+
+def get_account_conatct_details(account_id):
+    """
+    Retrieves the contact details for a given AWS account ID from a JSON file.
+    
+    Args:
+    account_id (str): The AWS account ID for which to retrieve contact details.
+    
+    Returns:
+    string: A string containing the contacts with , separated values for the specified account ID.
+    """
+    account_contacts_file = "./config/account_contacts.json"
+    if not os.path.exists(account_contacts_file):
+        log_error(f"account contact file not found: {account_contacts_file}")
+        return ""
+    
+    with open(account_contacts_file, 'r') as file:
+        try:
+            accounts_data = json.load(file)
+            cont_json = accounts_data.get(account_id, {})
+            if cont_json:
+                contacts = cont_json.get('contacts', "")
+                CCList = cont_json.get('CCList', "")
+
+                return contacts, CCList
+        except json.JSONDecodeError as e:
+            log_exception(e)
+            return "",""
+
+def get_splunk_destination_arn_region(region_name):
+    """
+    Retrieves the Splunk destination ARN based on the specified AWS region.
+    Args:
+    region_name (str): The AWS region for which to retrieve the Splunk destination ARN.
+    Returns:
+    str: The Splunk destination ARN for the specified region, or an error message if the region is unsupported.
+    """
+    splunk_sub_fil_arns_file = "./config/splunk_subscription_filter_arns.json"
+    destination_arn = ""
+    if not os.path.exists(splunk_sub_fil_arns_file):
+        log_error(f"splunk subscription filter arns file not found: {splunk_sub_fil_arns_file}")
+        return ""
+    with open(splunk_sub_fil_arns_file, 'r') as file:
+        try:
+            arn_data = json.load(file)
+            destination_arn_json = arn_data.get(region_name, None)
+            if destination_arn_json:
+                destination_arn = destination_arn_json.get("destination_arn", None)
+                return destination_arn
+            else:   
+                log_error(f"Region {region_name} not found in splunk subscription filter arns file.")
+                return ""
+        except json.JSONDecodeError as e:
+            log_exception(e)
+            return ""
+
+
+def check_subscription_filter(log_group_name, destination_arn=""):
+    # Create a CloudWatch Logs client
+    client = boto3.client('logs')
+    arn_found = 'N'
+    # Retrieve the subscription filters for the specified log group
+    response = client.describe_subscription_filters(
+        logGroupName=log_group_name
+    )
+    
+    # Check if there are any subscription filters attached
+    if response['subscriptionFilters']: 
+        for filter in response['subscriptionFilters']:
+            if filter['destinationArn'] == destination_arn:
+                #print(f"Subscription filter found for log group '{log_group_name}' with ARN: {filter['destinationArn']}")
+                arn_found = 'Y' 
+    else:
+        arn_found = 'N'
+    
+    return arn_found
+
+
+def get_log_groups_with_retention(retention_days=7):
+    """
+    Retrieves all CloudWatch log groups with a retention period greater than or equal to the specified number of days.
+    Args:
+    retention_days (int): The minimum retention period in days to filter log groups. Default is 1 day.
+    Returns:
+    list: A list of log group names with their retention periods that match the specified criteria.
+    """
+    # Create a CloudWatch Logs client
+    client = boto3.client('logs')
+
+    # Initialize variables
+    acct_no, region = get_aws_account_id_and_region()
+    sp_sub_fltr_arn = get_splunk_destination_arn_region(region)
+    next_token = None
+    list_of_log_groups_with_retention_detail_and_sub_fltr_stat = []
+
+    # Loop to handle pagination
+    while True:
+        # Build the parameters for the describe_log_groups call
+        params = {}
+        if next_token:
+            params['nextToken'] = next_token
+
+        # Retrieve log groups
+        response = client.describe_log_groups(**params)
+
+        # Process each log group
+        for log_group in response.get('logGroups', []):
+            # Check if log group is already having required splunk subscription filter or not
+            sp_sub_fltr_found = check_subscription_filter(log_group['logGroupName'], sp_sub_fltr_arn)
+            # Get the retention period for the log group
+            retention_in_days = log_group.get('retentionInDays')
+
+            # Check if the log group's retention period matches the specified period
+            if retention_in_days and retention_in_days > retention_days:
+                gr_name_n_ret_days_sub_ft_stat = log_group['logGroupName'] + ":" + str(retention_in_days) + ":" + sp_sub_fltr_found
+                list_of_log_groups_with_retention_detail_and_sub_fltr_stat.append(gr_name_n_ret_days_sub_ft_stat)
+            elif not retention_in_days:  
+                # If retentionInDays is None, it means the log group never expires
+                gr_name_n_ret_days_sub_ft_stat = log_group['logGroupName'] + ":Never expire" + ":" + sp_sub_fltr_found
+                list_of_log_groups_with_retention_detail_and_sub_fltr_stat.append(gr_name_n_ret_days_sub_ft_stat)
+        # Check if there is a next token
+        next_token = response.get('nextToken')
+        if not next_token:
+            break
+
+    return list_of_log_groups_with_retention_detail_and_sub_fltr_stat
+
+def get_given_log_groups_with_retention(log_groups,retention_days=1):
+    """
+    Retrieves all CloudWatch log groups with a retention period greater than or equal to the specified number of days.
+    Args:
+    retention_days (int): The minimum retention period in days to filter log groups. Default is 1 day.
+    Returns:
+    list: A list of log group names with their retention periods that match the specified criteria.
+    """
+    # Create a CloudWatch Logs client
+    client = boto3.client('logs')
+
+    # Initialize variables
+    acct_no, region = get_aws_account_id_and_region()
+    sp_sub_fltr_arn = get_splunk_destination_arn_region(region)
+    next_token = None
+    list_of_log_groups_with_retention_detail_and_sub_fltr_stat = []
+
+    # Loop to handle pagination
+    while True:
+        # Build the parameters for the describe_log_groups call
+        params = {}
+        if next_token:
+            params['nextToken'] = next_token
+
+        # Retrieve log groups
+        response = client.describe_log_groups(**params)
+
+        # Process each log group
+        for log_group in response.get('logGroups', []):
+            if log_groups:
+                for lg in log_groups:
+                    if lg.split(',')[0].strip().replace('\n','') not in log_group['logGroupName']:
+                        continue 
+                    else:
+                        print(f"Log group found: {log_group['logGroupName']}")
+                        # Check if log group is already having required splunk subscription filter or not
+                        sp_sub_fltr_found = check_subscription_filter(log_group['logGroupName'], sp_sub_fltr_arn)
+                        # Get the retention period for the log group
+                        retention_in_days = log_group.get('retentionInDays')
+
+                        # Check if the log group's retention period matches the specified period
+                        if retention_in_days and retention_in_days >= retention_days:
+                            gr_name_n_ret_days_sub_ft_stat = log_group['logGroupName'] + ":" + str(retention_in_days) + ":" + sp_sub_fltr_found
+                            list_of_log_groups_with_retention_detail_and_sub_fltr_stat.append(gr_name_n_ret_days_sub_ft_stat)
+                        else:
+                            gr_name_n_ret_days_sub_ft_stat = log_group['logGroupName'] + ":Never expire" + ":" + sp_sub_fltr_found
+                            list_of_log_groups_with_retention_detail_and_sub_fltr_stat.append(gr_name_n_ret_days_sub_ft_stat)
+                continue
+            
+
+        # Check if there is a next token
+        next_token = response.get('nextToken')
+        if not next_token:
+            break
+    return list_of_log_groups_with_retention_detail_and_sub_fltr_stat
+
+
+def add_subscription_filter_to_log_group(log_group_name, filter_name="Splunk",filter_pattern="", destination_arn=""):
+    """
+    Adds a subscription filter to a specified CloudWatch log group.
+    
+    Args:
+    log_group_name (str): The name of the log group to which the subscription filter will be added.
+    filter_name (str): The name of the subscription filter.
+    filter_pattern (str): The pattern to match log events.
+    destination_arn (str): The ARN of the destination for the subscription filter.
+    
+    Returns:
+    dict: Response from the AWS API call.
+    """
+    client = boto3.client('logs')
+    
+    AWS_REGION = os.getenv('AWS_REGION')
+    if not AWS_REGION:
+        session = boto3.Session()
+        AWS_REGION = session.region_name
+
+    destination_arn = get_splunk_destination_arn_region(AWS_REGION)
+    if not destination_arn:
+        log_error(f"Splunk destination ARN not found for region {AWS_REGION}.")
+        return {"Error": f"Splunk destination ARN not found for region {AWS_REGION}."}
+    chk_sub_fltr = check_subscription_filter(log_group_name, destination_arn)
+    if chk_sub_fltr == 'Y':
+        log_info(f"Subscription filter already exists for log group '{log_group_name}' with ARN: {destination_arn}")
+        return {"Message": f"Subscription filter already exists for log group '{log_group_name}' with ARN: {destination_arn}"}
+    
+    try:
+        response = client.put_subscription_filter(
+        logGroupName=log_group_name,
+        filterName=filter_name,
+        filterPattern=filter_pattern,
+        destinationArn=destination_arn
+        )
+        
+        return response
+    except Exception as e:
+        log_exception(e)
+        return {"Error": str(e)}
+    
+def get_aws_account_name_by_id(account_id):
+    """
+    Retrieves the AWS account name based on the provided account ID.
+    
+    Args:
+    account_id (str): The AWS account ID for which to retrieve the name.
+    
+    Returns:
+    str: The name of the AWS account, or an error message if not found.
+    """
+    jetbridge_accounts_file = "./config/jetbridge_accounts.json"
+    if not os.path.exists(jetbridge_accounts_file):
+        log_error(f"Jetbridge accounts file not found: {jetbridge_accounts_file}")
+        return "Jetbridge accounts file not found."
+    with open(jetbridge_accounts_file, 'r') as file:
+        try:
+            accounts_data = json.load(file)
+            account_name = accounts_data.get(account_id, {}).get('name', None)
+            if account_name:
+                return account_name
+            else:
+                log_error(f"Account ID {account_id} not found in jetbridge-accounts.json.")
+                return f"Account ID {account_id} not found in jetbridge-accounts.json." 
+        except json.JSONDecodeError as e:
+            log_exception(e)
+            return "Error decoding JSON from jetbridge-accounts.json file."
+
+
+def send_email(menv="", email_type="FinOps-Automation-Report", sender_list="santhisri.kankanala@fiserv.com",cc_list="",email_body="",test="N",file_name=""):
+    """
+    Sends an email notification with the specified parameters.
+    
+    Args:
+    menv (str): The environment for which the email is being sent.
+    email_type (str): The type of release or report. Default is "Jacoco".
+    sender_list (str): Comma-separated list of email addresses to send the notification to.
+    cc_list (str): Comma-separated list of email addresses to CC. Default is "  
+    email_body (str): The body of the email to be sent. 
+   
+    Returns:
+    None
+    """
+    account_no, AWS_REGION = get_aws_account_id_and_region()
+    if not account_no:
+        print("AWS Account ID not found. Please check your AWS credentials.")
+        return {"Error": "AWS Account ID not found."}
+    
+    if not menv:
+        menv = get_aws_account_name_by_id(account_no)
+    sender_list = sender_list.split(",")
+    dear_address = ""
+    for sender in sender_list:
+        if dear_address.strip() == "":
+            dear_address = sender.split('.')[0].strip().capitalize()
+        else:
+            dear_address = dear_address + ", " + sender.split('.')[0].strip().capitalize()
+    if test.upper() == "Y":
+        CCADDRESSES = ["santhisri.kankanala@fiserv.com"]  
+    else:
+        CCADDRESSES = [""] 
+
+    CCADDRESSES = CCADDRESSES + cc_list.split(",") 
+    
+    mysub = email_type + "(" + menv + ")"
+    env_name = account_no + "-" + menv + " <b>Region:</b>" + AWS_REGION
+    
+    try:
+        SENDER = "finops-automations@mail.fiserv.com"
+        RECIPIENT = sender_list
+        AWS_REGION = AWS_REGION
+        SUBJECT = mysub
+        BODY_HTML = """<html>
+        <head></head>
+        <body> Dear """ + dear_address + """,
+        <br>
+        Please review below FinOps Cost Optimization Recommendation and reply to this email with your approval to allow automation to execute the recommended action. If you have any applicable exceptions, please include them as well.
+        <h1> """ + email_type + """ </h1>
+        <p>
+        <b>ENV Name:</b> """ + env_name + """ <br>
+        """ + email_body + """ <br>
+
+        <br>
+        Thanks, <br>
+        MSTech Platform Engineering Team<br>
+        DL-NA-MSTech-Platform-Eng@fiserv.com <br>
+        </p>
+        </body>
+        </html>
+        """
+        # The character encoding for the email.
+        CHARSET = "UTF-8"
+
+        ses = boto3.client("ses", region_name=AWS_REGION)
+        
+        # Try to send the email.
+        try:
+            response = ses.send_email(
+            Destination={
+            'ToAddresses': RECIPIENT,
+            'CcAddresses': CCADDRESSES
+            },
+            ReplyToAddresses=['santhisri.kankanala@fiserv.com'],
+            Message={
+            'Body': {
+            'Html': {
+            'Charset': CHARSET,
+            'Data': BODY_HTML,
+            },
+            'Text': {
+            'Charset': CHARSET,
+            'Data': "",
+            },
+            },
+            'Subject': {
+            'Charset': CHARSET,
+            'Data': SUBJECT,
+            },
+            },
+            Source=SENDER,
+            # # If you are not using a configuration set, comment or delete the
+            # # following line
+            # ConfigurationSetName=CONFIGURATION_SET,
+            )
+            # Display an error if something goes wrong.
+            
+        except Exception as e:
+            log_exception(e)
+            print(f"Error sending email: {e}")
+            return {"Error": str(e)}
+        else:
+            print(f"Email sent! Message ID: {response['MessageId']}")
+            return response
+    except Exception as e:
+        log_exception(e)
+        print(f"Error in send_email function: {e}")
+        return {"Error": str(e)}    
+
+
+def send_email_with_attachment(menv="Test", email_type="FinOps-Monthly-Cost-Saving-Report", sender_list="santhisri.kankanala@fiserv.com",cc_list="",email_body="Test",test="Yes",filename="/Users/santhi/mpe/finopsautomations/test.txt"): 
+    """
+    Sends an email with an attachment using AWS SES.
+    
+    Args:
+    menv (str): The environment for which the email is being sent.
+    email_type (str): The type of release or report. Default is "Jacoco".
+    sender_list (str): Comma-separated list of email addresses to send the notification to.
+    cc_list (str): Comma-separated list of email addresses to CC. Default is "  
+    email_body (str): The body of the email to be sent. 
+   
+    Returns:
+    None
+    """
+    # Email configuration
+    sender_email = "finops-automations@mail.fiserv.com"
+    RECIPIENT = sender_email.split(",")
+    receiver_email = sender_list
+    RECIPIENT = receiver_email.split(",")
+    CCADDRESSES = ["@fiserv.com"]
+    subject = 'Test Email with Attachment'
+    body_html = """
+    <html>
+    <head></head>
+    <body>
+        <h1>This is Test Email</h1>
+        <p>FinOps Cost Saving Report</p>
+    </body>
+    </html>
+    """
+
+    # Create a multipart message
+    msg = MIMEMultipart()
+    msg['From'] = sender_email
+    msg['To'] = receiver_email
+    msg['Subject'] = subject
+
+    # Add body to email
+    body = MIMEText(body_html, 'html')
+    msg.attach(body)
+
+    # Attach the file
+    with open(filename, 'rb') as attachment:
+        part = MIMEApplication(attachment.read())
+        part.add_header(
+            "Content-Disposition",
+            f"attachment; filename= {os.path.basename(filename)}",
+        )
+        msg.attach(part)
+
+    # Convert message to string
+    raw_msg = msg.as_string()
+    print(os.path.basename(filename))
+    # Encode the message in base64
+    raw_msg_bytes = raw_msg.encode('utf-8')
+    raw_msg_base64 = base64.b64encode(raw_msg_bytes).decode('utf-8')
+
+    # Initialize Boto3 SES client
+    ses_client = boto3.client('ses')
+
+    # Send email
+    try:
+        response = ses_client.send_raw_email(
+            RawMessage={
+                'Data': raw_msg_base64
+            },
+            Source=sender_email,
+            Destinations=RECIPIENT
+        )
+        print("Email sent successfully.")
+        print(response)
+    except Exception as e:
+        print(f"Error: {e}")
+
+if __name__ == '__main__':
+    print("This module is not meant to be run directly. Please import it in your script and call required function from its available list.")
+    # Example usage
+    # log_groups = []
+    # retention_days = 1  # Specify the retention period in days
+    # log_groups = get_log_groups_with_retention(retention_days)
+    # print(f"Log groups with retention period >= {retention_days} days:")
+    # print("Total log groups found:", len(log_groups))
+
+    # for log_group in log_groups:
+    #     print(log_group)
+
+    #print(add_subscription_filter_to_log_group("/ecs/dev-hello-world-lg", filter_name="Splunk", filter_pattern="", destination_arn=""))
+    # print(response)
+
+    #send_email(menv="nonprod", email_type="test-email",email_body="This is a test email body for FinOps Automation Report.", sender_list="mukesh.kumar4@fiserv.com")
+    #print(get_aws_account_name_by_id("058264069035"))  # Replace with a valid account ID for testing
+    # resp=check_subscription_filter("/ecs/qa-hello-world-lg","arn:aws:logs:us-east-1:871681779858:destination:6f8c45cc-97d5-4fc6-9165-18fea6640d16")  # Replace with a valid log group name for testing
+    # print(resp)
+    # print(get_splunk_destination_arn_region("us-east-4"))
+    # print(get_account_conatct_details('958612202038'))
+    #print(get_splunk_destination_arn_region("us-west-2"))
+    # Example usage
+    # send_email(menv="nonprod", email_type="FinOps-Automation-Report", sender_list="mukesh.kumar4@fiserv.com", email_body="This is a test email body for FinOps Automation Report.")
+    # print(get_log_groups_with_retention(retention_days=7))
+    #print(get_active_db_connections('database-3-instance-3',30))
+    #print(get_monthly_cost(service_name="USW2-EBS:SnapshotUsage"))
+    #print(get_monthly_cost(service_name="Amazon Relational Database Service"))
+    print(get_monthly_cost(service_name="AmazonCloudWatch"))
+    #get_monthly_cost_by_snapshot_id('snap-03604bf47b272dc51')
+    #print(get_cloudability_secrets_by_view("GBS_ALL"))
+    #print(get_aae_date())
+    #create_csv_file("test.csv", [["Name", "Location"], ["Mukesh", "NE"], ["Sreedhar", "NJ"]])
+    #send_email_with_attachment()
+    #write_data_to_confluent_topic()
+    #get_savings_opportunities_for_aws_account()
+    #write_data_to_confluent_topic()
+    #print(read_data_from_confluent_topic())
+    #print(get_current_month())
+    #print(get_previous_month())
+    #print(get_accounts_for_gbs_org(detail_type="chris_directs"))
+    #print(get_accounts_for_gbs_org(detail_type="accounts"))
+    #print(get_accounts_for_gbs_org(detail_type="report_data_keys"))
+    #print(get_accounts_for_gbs_org(detail_type="chris_direct_accounts", chris_direct_name="pradeep.pai@Fiserv.com"))
+
+
+
+
+    ---------------------original rds
+
+
+    
+"""
+script_owner/author:Sriram S
+E-mail:sriram.sundaravaradhan@fiserv.com
+[i] needs mu.py in the same execution directory
+update_rds.py has been created to READ the given rds detail (Default), RESIZE and DELETE it if it is not required.
+Note: DELETE action does not take rds snap shot. So please take the snapshot before executing this acction.
+
+input file format for resizing
+db-instance-1,db.m5.large
+db-instance-2,db.t3.medium
+
+input file format for deleting & read only mode
+db-instance-1
+db-instance-2
+
+Usage Ex:
+1. python update_rds.py -i input.txt
+2. python update_rds.py -i input.txt -a RESIZE/DELETE
+
+Log file is created and appended for every execution in the script's path, file name has respective date/time stamp
+"""
+
+import argparse
+import boto3, requests
+import mpe_utils as mu
+from botocore.exceptions import ClientError
+
+# Initialize a session using Amazon RDS
+rds_client = boto3.client('rds')
+session = boto3.Session()
+compute_optimizer_client = boto3.client('compute-optimizer')
+account_no, AWS_REGION = mu.get_aws_account_id_and_region()
+msg_key = account_no + "_" + AWS_REGION + "_" + mu.get_current_month() + "_RDS_TERMINATION_R"
+msg_value = "Region:" + AWS_REGION 
+def get_rds_instances_for_current_account(input = "ALL",action="READ"):
+    """
+    Get the list of RDS instances for the current AWS account.
+    
+    :param option: Option to filter instances (e.g., 'ALL', 'RUNNING', 'STOPPED').
+    :param connections_count: Number of connections to check.
+    :return: List of RDS instance identifiers.
+    """
+    try:
+        response = rds_client.describe_db_instances()
+        db_instances = response['DBInstances']
+
+        if action == "COUNT":
+            # Count the number of RDS instances
+            instance_count = len(db_instances)
+            
+            return instance_count
+        
+        header_data = ["DBInstanceIdentifier", "DBInstanceClass", "DBInstanceEngine" "DBInstanceStatus", "Average_Connections"]
+        instance_details = []
+        for db_instance in db_instances:
+            instance_id = db_instance['DBInstanceIdentifier']
+            instance_state = db_instance['DBInstanceStatus']
+            instance_class = db_instance['DBInstanceClass']
+            DBInstanceArn = db_instance['DBInstanceArn']
+            # Get the average connections for the RDS instance
+            instance_arn = db_instance['DBInstanceArn']
+            Idle =get_rds_instance_recommendations
+            Avergae_Connections = mu.get_active_db_connections(rds_instance_id=instance_id, days=30)
+            instance_engine = db_instance['Engine']
+            if input == "ALL":
+                instance_details.append([instance_id, instance_class,instance_engine, instance_state, Avergae_Connections])
+        
+        print(f"RDS Instances for current account: {instance_details}")
+        return True
+    except ClientError as e:
+        mu.log_error(f"Error fetching RDS instances: {e}")
+        return False
+
+def get_idle_rds_instances_detail(option="ALL",test="Y"):
+    """
+    Get the list of idle RDS instances and their details.
+    :param option: Option to filter instances (e.g., 'ALL', 'RUNNING', 'STOPPED').
+    :return: List of idle RDS instance identifiers.
+    """
+    global msg_key, msg_value
+    header_data = ["DBInstanceIdentifier", "DBInstanceClass", "DBInstanceEngine", "DBInstanceStatus", "AverageConnections","MaxConnections", "Finding", "SavingsOpportunityAfterDiscounts"]
+    instance_details = []
+    # Create a Boto3 client for Compute Optimizer
+    client = boto3.client('compute-optimizer')
+    # Initialize a list to hold the ARNs
+    rds_instance_arns = []
+
+    # Describe RDS instances
+    response = rds_client.describe_db_instances()
+    DBInstances = response['DBInstances']
+    # Iterate through the instances and collect their ARNs
+    for db_instance in DBInstances:
+        rds_instance_arns.append(db_instance['DBInstanceArn'])
+    # Get recommendations for RDS instances
+    response = client.get_idle_recommendations(
+        resourceArns=rds_instance_arns
+    )
+    total_savingsOpportunityAfterDiscounts = 0
+    # Iterate through the recommendations
+    for recommendation in response['idleRecommendations']:
+        # Check the utilization metrics for idle instances
+        resourceId = recommendation['resourceId']
+        finding = recommendation['finding']
+        savingsOpportunityAfterDiscounts = "$" + str(recommendation['savingsOpportunityAfterDiscounts']["estimatedMonthlySavings"]["value"])
+        total_savingsOpportunityAfterDiscounts += recommendation['savingsOpportunityAfterDiscounts']["estimatedMonthlySavings"]["value"]
+        maxDatabaseConnections = round(recommendation['utilizationMetrics'][1]["value"],2)
+
+        for db_instance in DBInstances:
+            instance_id = db_instance['DBInstanceIdentifier']
+            if instance_id == resourceId:
+                instance_state = db_instance['DBInstanceStatus']
+                instance_class = db_instance['DBInstanceClass']
+                AverageConnections = mu.get_active_db_connections(rds_instance_id=instance_id, days=30)
+                instance_engine = db_instance['Engine']
+                instance_details.append([instance_id, instance_class,instance_engine, instance_state, AverageConnections, maxDatabaseConnections, finding, savingsOpportunityAfterDiscounts])
+        
+    last_6_month_cost = mu.get_monthly_cost(service_name="Amazon Relational Database Service")
+    last_month_cost = "Error"
+    prev_month = mu.get_previous_month()
+    for mandc in last_6_month_cost:
+        if mandc[0] == prev_month:
+            last_month_cost = mandc[1].split("$")[1]
+        else:
+            continue
+    if len(last_6_month_cost) > 0 and last_6_month_cost[0][1] != "$0.0":
+        email_body = "<b>Last 6 months RDS Cost:</b>" 
+
+        email_body = email_body + mu.get_table_html(["Month", "Cost"], last_6_month_cost)  + "<br>"
+    else:
+        email_body = "<b>Last 6 months RDS Cost:</b> This information is currently not available due to some technical issue." + "<br>"
+    
+    recommended_resources_count = str(len(instance_details)) + "/" + str(get_rds_instances_for_current_account(input="ALL",action="COUNT"))
+    email_body += "Count of Recommended RDS Instances for Termination/Total RDS Count: " + "<b>" + recommended_resources_count + "</b>\n\n"
+    
+    msg_value += ",OptimizationName:RDS_TERMINATION,OptimizableResourcesCount:" + recommended_resources_count + ",FinOpsSavingOpportunityIn$:" + str(total_savingsOpportunityAfterDiscounts) + ",FinOpsSavingRecommendationDate:" + mu.get_current_date() + ",LastMonthCostIn$:" + last_month_cost
+    print("msg_key: " + msg_key)
+    print("msg_value: " + msg_value)
+    
+    if len(response['idleRecommendations']) > 0:
+        mu.write_data_to_confluent_topic(key=msg_key, value=msg_value)
+        table_html = mu.get_table_html(header_data, instance_details)
+        exec_table_html = mu.get_table_html(['Serial Number','DBInstanceIdentifier','No Action(NA))/Termination with Backup Snapshot(TWB)/Just Stop(JS)'], [['1', ' ', ' '],['2', ' ', ' '],['3', ' ', ' ']])
+        
+        email_body += '<br><b>Recommended Action:</b> Idle RDS Instances should be terminated to optimize RDS costs without any backup snapshot created before Termination.'
+        email_body += '<br><b>Recommended Action Execution Plan:</b> Below list of DB Instances will be terminated as per above Recommended Action  excluding received exceptions from you using automation script present at <a href="https://gitlab.onefiserv.net/mstechpe/utils/finopsautomations/-/tree/main">finopsautomations gitlab repo</a>'
+        email_body += table_html
+        email_body += '<p style="color: blue;"><br><b>Exceptions:</b>If you want to exclude any DB Instances from above recommended action, please copy the DBInstanceIdentifier into the table below and select only one action against it.</p>'
+        email_body += exec_table_html
+
+
+
+        if test.upper() == "Y":
+            mu.log_info("Test mode is ON. Sending email to mukesh.kumar4@fiserv.com")  
+            sender_list = "mukesh.kumar4@fiserv.com"
+            cc_list = "sreedhar.potturi@Fiserv.com" 
+        else:
+            acct_no,region = mu.get_aws_account_id_and_region()
+            sender_list,cc_list = mu.get_account_conatct_details(acct_no)
+            mu.log_info("Test mode is OFF. Sending email to " + sender_list)   
+            
+        mu.send_email(email_type="FinOps Recommended Action Report: RDS Termination", sender_list=sender_list, cc_list=cc_list,email_body=email_body,test=test)
+    else:
+        mu.log_info("No RDS Found for Termination")
+ 
+
+
+def get_rds_instance_recommendations():
+    try:
+        # Call the get_rds_instance_recommendations API
+        response = compute_optimizer_client.get_recommendation_summaries()
+        
+        print(f"Response: {response}")
+        # Check if the response contains recommendations
+        
+       
+    
+    except Exception as e:
+        print(f"Error fetching recommendations: {e}")
+
+
+
+def get_instance_details(db_instance_identifier):
+    """
+    Fetch the details of an RDS instance, such as its size, state, Multi-AZ status,
+    and read replica details.
+    
+    :param db_instance_identifier: The identifier of the RDS instance.
+    :return: A tuple with the instance's size, state, Multi-AZ status, read replica status, and source instance identifier if a read replica.
+    """
+    try:
+        response = rds_client.describe_db_instances(DBInstanceIdentifier=db_instance_identifier)
+        db_instance = response['DBInstances'][0]
+        
+        instance_size = db_instance['DBInstanceClass']
+        instance_state = db_instance['DBInstanceStatus']
+        
+        # Debug log all attributes that might indicate the status of Multi-AZ or read replica
+        mu.log_debug(f"Instance attributes: {db_instance}")
+
+        # MultiAZ will be True if the instance is part of a Multi-AZ deployment
+        multi_az = db_instance.get('MultiAZ', False)
+        
+        # If it's a read replica, the 'ReadReplicaSourceDBInstanceIdentifier' field is populated
+        read_replica = db_instance.get('ReadReplicaSourceDBInstanceIdentifier')
+        source_identifier = db_instance.get('ReadReplicaSourceDBInstanceIdentifier', None)
+        
+        # Log additional details for clarity
+        mu.log_debug(f"Multi-AZ: {multi_az}, Read Replica: {read_replica}, Source Identifier: {source_identifier}")
+        
+        return instance_size, instance_state, multi_az, bool(read_replica), source_identifier
+    
+    except ClientError as e:
+        mu.log_error(f"Error fetching details for instance {db_instance_identifier}: {e}")
+        return None, None, None, None, None
+
+def resize_rds_instance(db_instance_identifier, new_instance_type):
+    """
+    Resize the RDS instance to a new instance type.
+    
+    :param db_instance_identifier: The identifier of the RDS instance to resize.
+    :param new_instance_type: The new instance type (e.g., 'db.m5.large', 'db.t3.medium').
+    """
+    instance_size, instance_state, multi_az, is_read_replica, source_identifier = get_instance_details(db_instance_identifier)
+    
+    if instance_size is None:
+        return
+
+    mu.log_info(f"Instance {db_instance_identifier} - Current size: {instance_size}, State: {instance_state}, Multi-AZ: {multi_az}.")
+    
+    # Check if the instance is a Multi-AZ instance or a read replica
+    if multi_az or is_read_replica:
+        mu.log_warning(f"Cannot resize Multi-AZ or Read Replica instances directly. Resizing the source instance for read replicas.")
+        if is_read_replica:
+            mu.log_info(f"Attempting to resize the source instance for read replica: {source_identifier}")
+            db_instance_identifier = source_identifier  # Resize the source instance for read replicas
+        
+        # Proceed with resizing the instance (note: it may not apply to Multi-AZ or read replica directly)
+    
+    # Ensure the instance is in a resizable state
+    if instance_state != 'available':
+        mu.log_warning(f"Instance {db_instance_identifier} is not in a resizable state (current state: {instance_state}).")
+        return
+
+    try:
+        # Modify the RDS instance
+        response = rds_client.modify_db_instance(
+            DBInstanceIdentifier=db_instance_identifier,
+            DBInstanceClass=new_instance_type,
+            ApplyImmediately=True  # Apply changes immediately, may cause downtime
+        )
+        mu.log_info(f"Successfully initiated resize of RDS instance {db_instance_identifier} to {new_instance_type}.")
+        mu.log_debug(f"Response: {response}")
+    
+    except ClientError as e:
+        mu.log_error(f"Error resizing RDS instance {db_instance_identifier}: {e}")
+
+def delete_rds_instance(db_instance_identifier,SkipFinalSnapshot=False):
+    """
+    Delete an RDS instance.
+    
+    :param db_instance_identifier: The identifier of the RDS instance to delete.
+    """
+    instance_size, instance_state, multi_az, is_read_replica, source_identifier = get_instance_details(db_instance_identifier)
+    
+    if instance_size is None:
+        return
+
+    mu.log_info(f"Instance {db_instance_identifier} - Current size: {instance_size}, State: {instance_state}, Multi-AZ: {multi_az}.")
+    
+    # Check if the instance is in a deletable state
+    if instance_state != 'available':
+        mu.log_warning(f"Instance {db_instance_identifier} is not in a deletable state (current state: {instance_state}).")
+        return
+
+    try:
+        # Delete the RDS instance
+        response = rds_client.delete_db_instance(
+            DBInstanceIdentifier=db_instance_identifier,
+            SkipFinalSnapshot=SkipFinalSnapshot  # Skip final snapshot before deletion
+        )
+        mu.log_info(f"Successfully initiated deletion of RDS instance {db_instance_identifier}.")
+        mu.log_debug(f"Response: {response}")
+    
+    except ClientError as e:
+        mu.log_error(f"Error deleting RDS instance {db_instance_identifier}: {e}")
+
+def read_rds_instance(db_instance_identifier):
+    """
+    READ an RDS instance.
+    
+    :param db_instance_identifier: The identifier of the RDS instance to get the detail.
+    """
+    instance_size, instance_state, multi_az, is_read_replica, source_identifier = get_instance_details(db_instance_identifier)
+    
+    if instance_size is None:
+        return
+
+    mu.log_info(f"Instance {db_instance_identifier} - Current size: {instance_size}, State: {instance_state}, Multi-AZ: {multi_az}.")
+
+def process_input_file(file_path, action):
+    """
+    Process the input file containing RDS instance IDs and their target instance types or deletion requests.
+    
+    :param file_path: Path to the input file containing instance ID and target size or deletion request.
+    :param action: Action to perform ('RESIZE' or 'DELETE').
+    """
+    try:
+        with open(file_path, 'r') as file:
+            lines = file.readlines()
+        
+        for line in lines:
+            parts = line.strip().split(',')
+            if action == 'RESIZE' and len(parts) == 2:
+                db_instance_id, target_size = parts
+                mu.log_info(f"Processing instance {db_instance_id} with target size {target_size}...")
+                resize_rds_instance(db_instance_id, target_size)
+            elif action == 'DELETE' and len(parts) == 1:
+                db_instance_id = parts[0]
+                mu.log_info(f"Processing instance {db_instance_id} for deletion...")
+                delete_rds_instance(db_instance_id)
+            elif action == 'READ' and len(parts) == 1:
+                db_instance_id = parts[0]
+                mu.log_info(f"Getting instance {db_instance_id} Detail...")
+                read_rds_instance(db_instance_id)
+
+            else:
+                mu.log_warning(f"Skipping invalid line: {line.strip()}")
+    except FileNotFoundError as e:
+        mu.log_error(f"Input file {file_path} not found: {e}")
+    except Exception as e:
+        mu.log_error(f"Error reading input file {file_path}: {e}")
+
+
+def get_rds_recommendation_from_cloudability(input="ALL", action="READ",test="Y"):
+    """
+    Get the list of RDS instances for the current AWS account.
+    
+    :param option: Option to filter instances (e.g., 'ALL', 'RUNNING', 'STOPPED').
+    :param connections_count: Number of connections to check.
+    :return: List of RDS instance identifiers.
+    """
+    ###########################################################################
+    #                   Define Constants & API Endpoint                       #
+    ###########################################################################
+    
+    # Frontdoor Credentials
+    FD_API_PUBLIC_KEY, FD_API_SECRET_KEY = mu.get_cloudability_secrets_by_view(view_name="GBS_ALL")
+    DOMAIN = "firstdata.com"
+    ENV_ID = "8207c224-4499-4cbf-b63d-537d61bb2582"
+    ENV_NAME = "main"
+    
+    # Parameters (all as variables)
+    aws_account_number, region = mu.get_aws_account_id_and_region()
+    vendor_account_ids = aws_account_number
+    basis = "effective"
+    limit = 100000
+    max_recs_per_resource = 1
+    offset = 0
+    product = "rds"   # <--- Now this drives the URL too!
+    duration = "thirty-day"
+    view_id = 1467480
+    accept_format = "text/csv"
+    
+    # API URL for Rightsizing Recommendations (product inserted dynamically)
+    RIGHTSIZING_API_URL = f"https://api.cloudability.com/v3/rightsizing/aws/recommendations/{product}"
+    
+    ###########################################################################
+    #                   Authenticate and Get Token                            #
+    ###########################################################################
+    
+    params = {'keyAccess': FD_API_PUBLIC_KEY, 'keySecret': FD_API_SECRET_KEY}
+    
+    auth_response = requests.post('https://frontdoor.apptio.com/service/apikeylogin', json=params)
+    
+    if auth_response.status_code != 200:
+        print(f'❌ Authentication failed: {auth_response.status_code}')
+        print(auth_response.text)
+        exit()
+    
+    token = auth_response.headers.get('apptio-opentoken')
+    
+    if not token:
+        print("❌ Authentication token not found!")
+        exit()
+    
+    headers = {
+        'apptio-opentoken': token,
+        'Content-Type': 'application/json',
+        'apptio-current-environment': ENV_ID
+    }
+    
+    print("✅ Authentication successful")
+    
+    ###########################################################################
+    #                   Make Rightsizing API Call                             #
+    ###########################################################################
+    
+    # Assemble the parameters into a dictionary
+    api_params = {
+        'vendorAccountIds': vendor_account_ids,
+        'basis': basis,
+        'limit': limit,
+        'maxRecsPerResource': max_recs_per_resource,
+        'offset': offset,
+        'product': product,
+        'duration': duration,
+        'viewId': view_id,
+        'Accept': accept_format
+    }
+    
+    # Make the GET request
+    rightsizing_response = requests.get(RIGHTSIZING_API_URL, headers=headers, params=api_params)
+    
+    if rightsizing_response.status_code != 200:
+        print(f'❌ API call failed: {rightsizing_response.status_code}')
+        print(rightsizing_response.text)
+        exit()
+    
+    print("✅ API call successful")
+
+    header = ["Resource Name", "Engine", "Last Seen", "Idle(%)", "Savings($)", "Savings(%)"]
+    data = []
+
+    rightsizing_response_json = rightsizing_response.json()
+    #print(rightsizing_response.text)
+    accounts_rds = rightsizing_response_json.get('result', [])
+    for account_rds in accounts_rds:
+        account_id = account_rds.get('vendorAccountId')
+        account_name = account_rds.get('accountName')
+        name = account_rds.get('name')
+        lastSeen = account_rds.get('lastSeen')
+        idle = account_rds.get('idle')
+        databaseEngine = account_rds.get('databaseEngine')
+        
+        recommendations = account_rds.get('recommendations', [])
+        storageRecommendations = account_rds.get('storageRecommendations', [])
+        for recommendation in recommendations:
+            action = recommendation.get('action')
+            if action == "Terminate":
+                if len(storageRecommendations)> 0:
+                    savings = round(recommendation.get('savings') + storageRecommendations[0].get('savings'), 2)
+                    savingsPct = recommendation.get('savingsPct') + storageRecommendations[0].get('savingsPct')
+                else:
+                    savings = recommendation.get('savings')
+                    savingsPct = recommendation.get('savingsPct')
+                data.append([name, databaseEngine, lastSeen, idle, savings, savingsPct])
+                #print(f"Resource Name: {name}, Engine: {databaseEngine}, Last Seen: {lastSeen}, Idle %: {idle}, Savings($): {savings}, Savings %: {savingsPct}")
+        
+    
+    last_6_month_cost = mu.get_monthly_cost(service_name="Amazon Relational Database Service")
+    if len(last_6_month_cost) > 0 and last_6_month_cost[0][1] != "$0.0":
+        email_body = "<b>Last 6 months RDS Cost:</b>" 
+
+        email_body = email_body + mu.get_table_html(["Month", "Cost"], last_6_month_cost)  + "<br>"
+    else:
+        email_body = "<b>Last 6 months RDS Cost:</b> This information is currently not available due to some technical issue." + "<br>"
+    email_body += "Total Recommended RDS Instances Termination Count: " + "<b>" + str(len(data)) + "/" + str(get_rds_instances_for_current_account(input="ALL",action="COUNT")) + "</b>\n\n"
+    
+    
+    if len(data) > 0:
+        table_html = mu.get_table_html(header, data)
+        
+        email_body += '<br><b>Recommended Action:</b> Idle RDS Instances should be terminated to optimize RDS costs.'
+        email_body += '<p style="color: blue;"><br><b>Exceptions:</b> If you want to exclude any RDS from below recommened list of termination, please reply to this email with the Resource Name(s) or filter criteria you want to exclude with proper justifictaion promptly before next scheduled Recommended Action Execution Date.</p>'
+        email_body += '<br><b>Recommended Action Execution Plan:</b> After below list of RDS to be terminated is reviewed and approevd by Application Owner/SME, Approved Recommended Action with any requested exclusion will be performed by automation script present in <a href="https://gitlab.onefiserv.net/mstechpe/utils/finopsautomations/-/tree/main">finopsautomations gitlab repo</a>'
+        email_body += table_html
+
+
+
+        if test.upper() == "Y":
+            mu.log_info("Test mode is ON. Sending email to mukesh.kumar4@fiserv.com")  
+            sender_list = "mukesh.kumar4@fiserv.com"
+            cc_list = "sreedhar.potturi@Fiserv.com" 
+        else:
+            acct_no,region = mu.get_aws_account_id_and_region()
+            sender_list,cc_list = mu.get_account_conatct_details(acct_no)
+            mu.log_info("Test mode is OFF. Sending email to " + sender_list)   
+            
+        mu.send_email(email_type="FinOps Recommended Action Report: RDS Termination", sender_list=sender_list, cc_list=cc_list,email_body=email_body,test=test)
+    else:
+        mu.log_info("No RDS Found for Termination")
+ 
+
+
+def main():
+    global log_file
+    
+    log_file = mu.setup_logging(True)
+    # Set up command line argument parsing
+    parser = argparse.ArgumentParser(
+        description="This script resizes or deletes AWS RDS instances based on the details provided in the input file.",
+        epilog="Example usage: python py_file.py -i rds_instance_details.txt -a RESIZE --verbose"
+    )
+    
+    parser.add_argument(
+        "-i", "--input", 
+        required=True, 
+        help="Path to the input file containing RDS instance IDs and target sizes. Format: instance_id,target_size (e.g., db-instance-1,db.m5.large)"
+    )
+    
+    parser.add_argument(
+        "-a", "--action", 
+        choices=["RESIZE", "DELETE"], 
+        required=False, 
+        help="Action to perform (e.g., RESIZE or DELETE)."
+    )
+    
+    parser.add_argument(
+        "--verbose", 
+        action="store_true", 
+        help="Enable verbose logging (shows debug-level logs)."
+    )
+    parser.add_argument("-t", "--test", help="When Y passed email sent to mukesh.kumar4@fiserv.com", type= str, default='N')
+    
+    args = parser.parse_args()
+
+    # Set up logging based on the verbosity flag
+    log_file = mu.setup_logging(True)
+    
+    if args.action:
+        mu.log_info(f"Starting RDS instance action: {args.action} from file: {args.input}")
+        #process_input_file(args.input, args.action)
+    else:
+        mu.log_info(f"Getting RDS Detail for current AWS Account based on input {args.input} ...")
+        #get_rds_instances_for_current_account(input=args.input, action="READ")
+        #get_rds_recommendation_from_cloudability(input=args.input, action="READ",test=args.test)
+        # Call the function to get RDS instance recommendations
+        #get_rds_instance_recommendations()
+        #print(get_idle_rds_instances())
+        get_idle_rds_instances_detail(args.input,args.test)
+        
+
+if __name__ == '__main__':
+    main()
+
+    
+
+
+    
