@@ -483,3 +483,110 @@ ddef main():
     else:
         mu.log_info(f"Getting RDS recommendations from Cloudability for input: {args.input}")
         get_rds_recommendation_from_cloudability(input=args.input, action="READ", test=args.test)
+
+
+
+
+
+
+
+--------------------------------------------------------------------------------
+
+sent chnages -
+
+def get_rds_recommendation_from_cloudability(input="ALL", action="READ", test="Y"):
+    FD_API_PUBLIC_KEY, FD_API_SECRET_KEY = mu.get_cloudability_secrets_by_view(view_name="GBS_ALL")
+    ENV_ID = "8207c224-4499-4cbf-b63d-537d61bb2582"
+
+    aws_account_number, region = mu.get_aws_account_id_and_region()
+    vendor_account_ids = aws_account_number
+    product = "rds"
+    RIGHTSIZING_API_URL = f"https://api.cloudability.com/v3/rightsizing/aws/recommendations/{product}"
+
+    params = {'keyAccess': FD_API_PUBLIC_KEY, 'keySecret': FD_API_SECRET_KEY}
+    auth_response = requests.post('https://frontdoor.apptio.com/service/apikeylogin', json=params)
+    if auth_response.status_code != 200:
+        print(f'❌ Authentication failed: {auth_response.status_code}')
+        exit()
+
+    token = auth_response.headers.get('apptio-opentoken')
+    if not token:
+        print("❌ Authentication token not found!")
+        exit()
+
+    headers = {
+        'apptio-opentoken': token,
+        'Content-Type': 'application/json',
+        'apptio-current-environment': ENV_ID
+    }
+
+    api_params = {
+        'vendorAccountIds': vendor_account_ids,
+        'basis': "effective",
+        'limit': 100000,
+        'maxRecsPerResource': 1,
+        'offset': 0,
+        'product': product,
+        'duration': "thirty-day",
+        'viewId': 1467480,
+        'Accept': "text/csv"
+    }
+
+    rightsizing_response = requests.get(RIGHTSIZING_API_URL, headers=headers, params=api_params)
+    if rightsizing_response.status_code != 200:
+        print(f'❌ API call failed: {rightsizing_response.status_code}')
+        exit()
+
+    print("✅ API call successful")
+
+    header = ["Resource Name", "Last Seen", "Engine", "Instance Type - Current", "Instance Type - Recommended", "Savings ($)", "Savings (%)"]
+    data = []
+
+    for account_rds in rightsizing_response.json().get('result', []):
+        name = account_rds.get('name')
+        last_seen = account_rds.get('lastSeen')
+        engine = account_rds.get('databaseEngine')
+
+        for recommendation in account_rds.get('recommendations', []):
+            if recommendation.get('action') == "Resize":
+                current_type = recommendation.get('currentType')
+                target_type = recommendation.get('targetType')
+                savings = round(recommendation.get('savings', 0.0), 2)
+                savings_pct = recommendation.get('savingsPct', 0.0)
+                data.append([name, last_seen, engine, current_type, target_type, f"${savings}", f"{savings_pct}%"])
+
+    last_6_month_cost = mu.get_monthly_cost(service_name="Amazon Relational Database Service")
+    email_body = "<b>Last 6 months RDS Cost:</b><br>"
+    if last_6_month_cost and last_6_month_cost[0][1] != "$0.0":
+        email_body += mu.get_table_html(["Month", "Cost"], last_6_month_cost) + "<br>"
+    else:
+        email_body += "This information is currently not available due to a technical issue.<br>"
+
+    email_body += "Total Recommended RDS Instances for Resize: <b>{}/{}</b><br><br>".format(
+        len(data), get_rds_instances_for_current_account(input="ALL", action="COUNT")
+    )
+
+    if data:
+        table_html = mu.get_table_html(header, data)
+        email_body += "<b>Recommended Action:</b> Below RDS Instances are eligible for resizing to optimize cost.<br>"
+        email_body += "<p style='color: blue;'><b>Note:</b> Please review the below recommendations. If any instance needs to be excluded from resizing, reply to this email with justification.</p>"
+        email_body += table_html
+
+        if test.upper() == "Y":
+            mu.log_info("Test mode is ON. Sending email to santhisri.kankanala@fiserv.com")
+            sender_list = "santhisri.kankanala@fiserv.com"
+            cc_list = "@Fiserv.com"
+        else:
+            acct_no, region = mu.get_aws_account_id_and_region()
+            sender_list, cc_list = mu.get_account_conatct_details(acct_no)
+            mu.log_info("Test mode is OFF. Sending email to " + sender_list)
+
+        mu.send_email(
+            email_type="FinOps Recommended Action Report: RDS Resize",
+            sender_list=sender_list,
+            cc_list=cc_list,
+            email_body=email_body,
+            test=test
+        )
+    else:
+        mu.log_info("No RDS Found for Resize Recommendation")
