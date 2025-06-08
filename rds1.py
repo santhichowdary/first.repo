@@ -590,3 +590,129 @@ def get_rds_recommendation_from_cloudability(input="ALL", action="READ", test="Y
         )
     else:
         mu.log_info("No RDS Found for Resize Recommendation")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-----------------------------------data-----------
+
+----incoming RDS: {
+  "service": "rds-recs",
+  "name": "bts-prod-merchant-db-west-global-instance-1",
+  "resourceIdentifier": "arn:aws:rds:us-west-2:675440017561:db:bts-prod-merchant-db-west-global-instance-1",
+  "accountName": "FDAWS BusinessTrack Prod",
+  "clusterI.dentifier": "bts-prod-merchant-db-west-global-cluster-1",
+  "vendorAccountId": "675440017561",
+  "tagMappings": [
+    {
+      "tag": "tag14",
+      "tagName": "ACC:FDC:DEPARTMENT",
+      "vendorTagValue": "gbs - rocco"
+    },
+    {
+      "tag": "tag15",
+      "tagName": "ACC-FDC-UAID",
+      "vendorTagValue": "uaid-02135"
+    },
+    {
+      "tag": "tag16",
+      "tagName": "ACC-FDC-ENV",
+      "vendorTagValue": "prod"
+    },
+    {
+      "tag": "tag17",
+      "tagName": "ACC-FDC-MONTHLY-BUDGET",
+      "vendorTagValue": "500"
+    },
+    {
+      "tag": "tag19",
+      "tagName": "ACC-FDC-ENV2",
+      "vendorTagValue": "prod"
+    },
+    {
+      "tag": "tag20",
+      "tagName": "ACC-FDC-UAID2",
+      "vendorTagValue": "uaid-02135"
+    },
+    {
+      "tag": "tag22",
+      "tagName": "DIVISION",
+      "vendorTagValue": "gbs - rocco"
+    }
+  ],
+  "provider": "NATIVE",
+  "currencyCode": "USD",
+  "region": "us-west-2",
+  "nodeType": "db.r5.xlarge",
+  "instanceFamily": "r5",
+  "clusterRole": "Reader",
+  "failoverOrder": "1",
+  "databaseEngine": "Aurora MySQL",
+  "storageType": "aurora",
+  "totalStorage": 0,
+  "unitPrice": 0.3,
+  "totalSpend": 208.94,
+  "idle": 0,
+  "lastSeen": "2025-06-06T23:00:00Z",
+  "daysInactive": 0,
+  "cpuCapacity": 4,
+  "memoryCapacity": 32,
+  "iopsCapacity": 0,
+  "storageThroughputCapacity": 3500,
+  "hoursRunning": 696,
+  "cpuMax": 24,
+  "memoryMax": 74,
+  "storageThroughputMax": 70,
+  "iopsMax": 533,
+  "databaseConnectionsMax": 80,
+  "topSavings": 1.65,
+  "topAction": "Rightsize",
+  "recommendations": [
+    {
+      "action": "Rightsize",
+      "preferenceOrder": 1,
+      "nodeType": "db.x2g.large",
+      "instanceFamily": "x2g",
+      "cpuCapacity": 2,
+      "memoryCapacity": 32,
+      "currentGen": true,
+      "sameFamily": false,
+      "unitPrice": 0.3,
+      "storageThroughputCapacity": 4750,
+      "instanceType": "aurora",
+      "cpuRatio": 0.5,
+      "memoryRatio": 1,
+      "cpuRisk": 0,
+      "memoryRisk": 0,
+      "risk": 0,
+      "storageThroughputRisk": 0,
+      "savingsPct": 1,
+      "savings": 1.65,
+      "inDefaults": false,
+      "memoryFit": true
+    }
+  ],
+  "storageRecommendations": [],
+  "defaultSameFamily": false,
+  "defaultCurrentGen": true,
+  "defaultMemoryFit": false,
+  "snoozed": false,
+  "snoozeExpiresOn": ""
+}
+
