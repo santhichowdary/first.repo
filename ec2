@@ -1,0 +1,135 @@
+import requests
+import boto3
+from datetime import datetime, timedelta
+import modules.utility as mu
+
+
+def get_ec2_rightsize_recommendations_from_cloudability(test="Y"):
+    """
+    Get EC2 rightsizing recommendations from Cloudability and send email.
+    """
+    # Cloudability Authentication
+    FD_API_PUBLIC_KEY, FD_API_SECRET_KEY = mu.get_cloudability_secrets_by_view(view_name="GBS_ALL")
+    ENV_ID = "8207c224-4499-4cbf-b63d-537d61bb2582"
+    
+    # Get AWS account ID
+    aws_account_number, region = mu.get_aws_account_id_and_region()
+
+    # API Setup
+    token_response = requests.post(
+        'https://frontdoor.apptio.com/service/apikeylogin',
+        json={"keyAccess": FD_API_PUBLIC_KEY, "keySecret": FD_API_SECRET_KEY}
+    )
+    token = token_response.headers.get('apptio-opentoken')
+    if not token:
+        print("❌ Failed to authenticate to Cloudability")
+        return
+
+    headers = {
+        'apptio-opentoken': token,
+        'Content-Type': 'application/json',
+        'apptio-current-environment': ENV_ID
+    }
+
+    product = "ec2"
+    RIGHTSIZING_API_URL = f"https://api.cloudability.com/v3/rightsizing/aws/recommendations/{product}"
+
+    params = {
+        'vendorAccountIds': aws_account_number,
+        'basis': 'effective',
+        'limit': 100000,
+        'maxRecsPerResource': 1,
+        'offset': 0,
+        'product': product,
+        'duration': 'thirty-day',
+        'viewId': 1467480,
+        'Accept': 'text/csv'
+    }
+
+    response = requests.get(RIGHTSIZING_API_URL, headers=headers, params=params)
+    if response.status_code != 200:
+        print(f"❌ Cloudability API failed: {response.status_code}")
+        return
+
+    recommendations_json = response.json()
+    accounts_ec2 = recommendations_json.get('result', [])
+
+    # Email Content Construction
+    header = [
+        "Instance ID", "Operating System", "Current Instance Type",
+        "Recommended Instance Type", "Savings($)", "Savings(%)"
+    ]
+    data = []
+
+    for account in accounts_ec2:
+        name = account.get('name')  # Instance ID
+        os = account.get('platform', 'N/A')
+        recommendations = account.get('recommendations', [])
+
+        for recommendation in recommendations:
+            if recommendation.get('action') == "Resize":
+                current_type = recommendation.get('currentInstanceType', 'N/A')
+                recommended_type = recommendation.get('targetInstanceType', 'N/A')
+                savings = round(recommendation.get('savings', 0), 2)
+                savings_pct = round(recommendation.get('savingsPct', 0), 2)
+
+                data.append([
+                    name, os, current_type, recommended_type, f"${savings}", f"{savings_pct}%"
+                ])
+
+    # Add cost summary if available
+    last_6_month_cost = mu.get_monthly_cost(service_name="Amazon Elastic Compute Cloud - Compute")
+    if last_6_month_cost:
+        email_body = "<b>Last 6 Months EC2 Cost:</b>"
+        email_body += mu.get_table_html(["Month", "Cost"], last_6_month_cost) + "<br><br>"
+    else:
+        email_body = "<b>Last 6 Months EC2 Cost:</b> Not available currently.<br><br>"
+
+    if data:
+        email_body += f"Total Recommended EC2 Instances for Rightsizing: <b>{len(data)}</b><br><br>"
+        email_body += mu.get_table_html(header, data)
+
+        email_body += '<p style="color: blue;"><br><b>Exceptions:</b> If you want to exclude any EC2 instances from the above recommendations, please reply with the instance ID and reason.</p>'
+        email_body += '<br><b>Execution Plan:</b> Approved changes will be applied using automation from <a href="https://gitlab.onefiserv.net/mstechpe/utils/finopsautomations/-/tree/main">GitLab Repo</a>.'
+
+        # Send email
+        if test.upper() == "Y":
+            mu.log_info("Test mode ON. Sending mail to santhisri.kankanala@fiserv.com")
+            sender_list = "santhisri.kankanala@fiserv.com"
+            cc_list = "@fiserv.com"
+        else:
+            acct_no, region = mu.get_aws_account_id_and_region()
+            sender_list, cc_list = mu.get_account_conatct_details(acct_no)
+
+        mu.send_email(
+            email_type="FinOps Recommended Action Report: EC2 Rightsizing",
+            sender_list=sender_list,
+            cc_list=cc_list,
+            email_body=email_body,
+            test=test
+        )
+    else:
+        mu.log_info("No EC2 instances found for rightsizing.")
+
+
+
+
+
+        -----log file block
+
+        elif service_name and service_name.strip() == "Amazon Elastic Compute Cloud":
+    response = client.get_cost_and_usage(
+        TimePeriod={
+            'Start': start_date,
+            'End': end_date
+        },
+        Granularity='MONTHLY',
+        Filter={
+            'Dimensions': {
+                'Key': 'SERVICE',
+                'Values': [service_name]
+            }
+        },
+        Metrics=['UnblendedCost']
+    )
+
