@@ -1395,3 +1395,55 @@ for rec in account_ec2.get("recommendations", []):
             f"{savings_pct}%",
             risk_score
         ])
+
+
+
+
+-------------logs 
+
+
+def get_monthly_cost(service_name="AmazonCloudWatch"):
+    """Retrieves the last 6 months of cost for a specified AWS service using the Cost Explorer API."""
+    start_date = (datetime.now() - timedelta(days=180)).strftime('%Y-%m-01')
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    client = boto3.client('ce')
+    service_name = service_name.strip()
+    
+    try:
+        if service_name == "AmazonCloudWatch" or service_name == "Amazon Elastic Compute Cloud" or service_name == "Amazon Relational Database Service":
+            response = client.get_cost_and_usage(
+                TimePeriod={'Start': start_date, 'End': end_date},
+                Granularity='MONTHLY',
+                Filter={
+                    'Dimensions': {
+                        'Key': 'SERVICE',
+                        'Values': [service_name]
+                    }
+                },
+                Metrics=['UnblendedCost']
+            )
+        elif "SnapshotUsage" in service_name:
+            response = client.get_cost_and_usage(
+                TimePeriod={'Start': start_date, 'End': end_date},
+                Granularity='MONTHLY',
+                Filter={
+                    'Dimensions': {
+                        'Key': 'USAGE_TYPE',
+                        'Values': [service_name]
+                    }
+                },
+                Metrics=['UnblendedCost']
+            )
+        else:
+            return []  # Unknown service name
+    except client.exceptions.InvalidParameterValueException as e:
+        print(f"Invalid parameter value: {e}")
+        return []
+    
+    last_6_mnths_cost = []
+    for result in response['ResultsByTime']:
+        amount = result['Total']['UnblendedCost'].get('Amount', "0.0")
+        last_6_mnths_cost.append([result['TimePeriod']['Start'][:-3], "$" + str(round(float(amount), 2))])
+    
+    return last_6_mnths_cost[::-1]
+
