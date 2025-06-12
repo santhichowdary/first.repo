@@ -1,0 +1,934 @@
+ec2---
+
+def get_ec2_rightsize_recommendations_from_cloudability(input="ALL", action="READ", test="Y", override_account_id="675440017561"):
+    """
+    Get EC2 rightsizing recommendations from Cloudability and send email.
+    """
+    # Cloudability Authentication
+    FD_API_PUBLIC_KEY, FD_API_SECRET_KEY = mu.get_cloudability_secrets_by_view(view_name="GBS_ALL")
+    ENV_ID = "8207c224-4499-4cbf-b63d-537d61bb2582"
+    
+    if override_account_id:
+        aws_account_number = override_account_id
+        region= "us-west-2"
+        mu.log_info(f"using override account ID: {aws_account_number}")
+    else:
+        aws_account_number, region = mu.get_aws_account_id_and_region()
+    
+    vendor_account_ids = aws_account_number
+    product = "ec2"
+    RIGHTSIZING_API_URL = f"https://api.cloudability.com/v3/rightsizing/aws/recommendations/{product}"
+    
+    params = {'keyAccess': FD_API_PUBLIC_KEY, 'keySecret': FD_API_SECRET_KEY}
+    auth_response = requests.post('https://frontdoor.apptio.com/service/apikeylogin', json=params)
+    if auth_response.status_code != 200:
+        print(f'❌ Authentication failed: {auth_response.status_code}')
+        exit()
+
+
+        
+    token = auth_response.headers.get('apptio-opentoken')
+    if not token:
+        print("❌ Authentication token not found!")
+        exit()
+
+    headers = {
+        'apptio-opentoken': token,
+        'Content-Type': 'application/json',
+        'apptio-current-environment': ENV_ID
+    }
+
+    
+
+    params = {
+        'vendorAccountIds': vendor_account_ids,
+        'basis': 'effective',
+        'limit': 100000,
+        'maxRecsPerResource': 1,
+        'offset': 0,
+        'product': product,
+        'duration': 'thirty-day',
+        'viewId': 1467480,
+        'Accept': 'text/csv'
+    }
+
+    rightsizing_response = requests.get(RIGHTSIZING_API_URL, headers=headers, params=params)
+    if rightsizing_response.status_code != 200:
+        print(f'❌ API call failed: {rightsizing_response.status_code}')
+        exit()
+
+    print("✅ API call successful")
+
+    
+    # Email Content Construction
+    header = [
+        "InstanceID", "Operating System", "Current Instance Type",
+        "Recommended Instance Type", "Savings($)", "Savings(%)"
+    ]
+    data = []
+
+    for account_ec2 in rightsizing_response.json().get('result', []):
+        print ("----incoming RDS:", json.dumps(account_ec2, indent =2))
+        
+        
+        InstanceID = account_ec2.get('name')  # Instance ID
+        os = account_ec2.get('platform', 'N/A')
+        recommendations = account_ec2.get('recommendations', [])
+
+        for recommendation in recommendations:
+            if recommendation.get('action') == "Rightsize":
+                current_type = recommendation.get('currentInstanceType', 'N/A')
+                recommended_type = recommendation.get('targetInstanceType', 'N/A')
+                savings = round(recommendation.get('savings', 0), 2)
+                savings_pct = round(recommendation.get('savingsPct', 0), 2)
+
+                data.append([
+                    InstanceID, os, current_type, recommended_type, f"${savings}", f"{savings_pct}%"
+                ])
+
+    # Add cost summary if available
+    last_6_month_cost = mu.get_monthly_cost(service_name="Amazon Elastic Compute Cloud")
+    if last_6_month_cost:
+        email_body = "<b>Last 6 Months EC2 Cost:</b>"
+        email_body += mu.get_table_html(["Month", "Cost"], last_6_month_cost) + "<br><br>"
+    else:
+        email_body = "<b>Last 6 Months EC2 Cost:</b> Not available currently.<br><br>"
+
+    if data:
+        table_html = mu.get_table_html(header, data)
+        email_body += "<b>Recommended Action:</b> Below Ec2 Instances are eligible for rightsizing to optimize cost.<br>"
+        email_body += '<br><b>Recommended Action Execution Plan:</b> Below list of EC2 Instances will be Rightsized as per above Recommended Action  excluding received exceptions from you using automation script present at <a href="https://gitlab.onefiserv.net/mstechpe/utils/finopsautomations/-/tree/main">finopsautomations gitlab repo</a>'
+        email_body += table_html
+
+        exec_table_html = mu.get_table_html(
+            [' serial Number', 'InstanceId', ' Action( No Action (NA) / Rightsize with caution)' ],
+            [['1', ' ', ' '],['2', ' ', ' '],['3', ' ', ' ']]
+            )
+          
+        email_body += '<p style="color: blue;"><br><b>Exceptions:</b>If you want to exclude any EC2 Instances from above recommended action, please copy the InstanceId into the table below and select only one action against it.</p>'
+        email_body += exec_table_html
+
+        # Send email
+        if test.upper() == "Y":
+            mu.log_info("Test mode ON. Sending mail to santhisri.kankanala@fiserv.com")
+            sender_list = "santhisri.kankanala@fiserv.com"
+            cc_list = "santhisri.kankanala@fiserv.com"
+        else:
+            acct_no, region = mu.get_aws_account_id_and_region()
+            sender_list, cc_list = mu.get_account_conatct_details(acct_no)
+
+        mu.send_email(
+            email_type="FinOps Recommended Action Report: EC2 Rightsizing",
+            sender_list=sender_list,
+            cc_list=cc_list,
+            email_body=email_body,
+            test=test
+        )
+    else:
+        mu.log_info("No EC2 instances found for rightsizing.")            
+             
+def main():
+    
+
+    log_file = mu.setup_logging(True)
+
+    parser = argparse.ArgumentParser(
+        description="This script processes AWS EC2 instance rightsize/delete or recommendation actions.",
+        epilog="Example: python script.py -i input.txt -a RESIZE --verbose"
+    )
+
+    parser.add_argument("-i", "--input", required=True, help="Input file with EC2 instance info.")
+    parser.add_argument("-a", "--action", choices=["RESIZE", "DELETE"], required=False, help="Action type.")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
+    parser.add_argument("-t", "--test", help="Set to 'Y' for test mode email.", type=str, default='N')
+
+    args = parser.parse_args()
+
+    if args.action:
+        mu.log_info(f"Starting EC2 instance action: {args.action} from file: {args.input}")
+        # process_input_file(args.input, args.action)
+    else:
+        mu.log_info(f"Getting RDS recommendations from Cloudability for input: {args.input}")
+        get_ec2_rightsize_recommendations_from_cloudability(input=args.input, action="READ", test=args.test)
+      
+if __name__ == '__main__':
+    main()        
+
+
+
+
+----------------utils
+
+
+def get_monthly_cost(service_name="AmazonCloudWatch"):
+    """Retrieves the last 3 months of cost for a specified AWS service using the Cost Explorer API.
+    Args:
+    service_name (str): The name of the AWS service for which to retrieve the cost. Default is "AmazonCloudWatch".
+    Returns:
+    list: A list containing the last 3 months of costs for the specified service, formatted as [month, cost].
+    """
+    
+    start_date = (datetime.now() - timedelta(days=180)).strftime('%Y-%m-01')  # Start of the month 30 days ago
+    end_date = datetime.now().strftime('%Y-%m-%d')  # Current date
+
+    
+    client = boto3.client('ce')  # Cost Explorer client
+    try:
+        if service_name and service_name.strip() == "AmazonCloudWatch" or service_name ==" Amazon Elastic Compute Cloud":
+            response = client.get_cost_and_usage(
+                TimePeriod={
+                    'Start': start_date,
+                    'End': end_date
+                },
+                Granularity='MONTHLY',
+                Filter={
+                    'Dimensions': {
+                        'Key': 'SERVICE',
+                        'Values': [service_name]
+                    }
+                },
+                Metrics=['UnblendedCost']
+            )
+        elif  "SnapshotUsage" in service_name :
+            response = client.get_cost_and_usage(
+                TimePeriod={
+                    'Start': start_date,
+                    'End': end_date
+                },
+                Granularity='MONTHLY',
+                Filter={
+                    'Dimensions': {
+                        'Key': 'USAGE_TYPE',
+                        'Values': [service_name]
+                    }
+                },
+                Metrics=['UnblendedCost']
+            )
+       # elif service_name and service_name.strip() == "Amazon Elastic Compute Cloud":
+       #     response = client.get_cost_and_usage(
+       #         TimePeriod={
+       #             'Start': start_date,
+       #             'End': end_date
+       #         },
+       #         Granularity='MONTHLY',
+       #         Filter={
+       #             'Dimensions': {
+       #                 'key':  'SERVICE',
+       #                 'Values': [service_name]
+       #             }
+       #         },
+       #         Metrics=['UnblendedCost']
+       #     )
+        elif service_name and service_name.strip() == "Amazon Relational Database Service":
+            response = client.get_cost_and_usage(
+                TimePeriod={
+                    'Start': start_date,
+                    'End': end_date
+                },
+                Granularity='MONTHLY',
+                Filter={
+                    'Dimensions': {
+                        'Key': 'SERVICE',
+                        'Values': [service_name]
+                    }
+                },
+                Metrics=['UnblendedCost']
+            )
+    except client.exceptions.InvalidParameterValueException as e:
+        print(f"Invalid parameter value: {e}")
+        return []
+    last_6_mnths_cost = []
+    rec_count = 0
+    #print(response)
+    for result in response['ResultsByTime']:
+        rec_count += 1
+        last_6_mnths_cost.append([result['TimePeriod']['Start'][:-3],"$"+str(round(float(result['Total']['UnblendedCost']['Amount']),2))])
+        #print(f"Billing Period: {result['TimePeriod']['Start']} to {result['TimePeriod']['End']}")
+       # print(f"Monthly cost for {service_name}: ${result['Total']['UnblendedCost']['Amount']}")
+        if rec_count == 6:
+            break
+
+    return last_6_mnths_cost[::-1]  # Reverse the list to show the most recent month first
+
+def get_active_db_connections(rds_instance_id,days=7): 
+    """
+    Retrieves the active database connections for a given RDS instance ID using AWS CloudWatch metrics.
+    Args:       
+    rds_instance_id (str): The RDS instance identifier for which to retrieve active connections.
+    Returns:
+    None: Prints the active database connections for the specified RDS instance.
+    """
+    # Create a CloudWatch client
+    cloudwatch = boto3.client('cloudwatch')
+    # Define the time range for the last month
+    end_time = datetime.now()
+    start_time = end_time - timedelta(days=days)
+
+    # Get the CloudWatch metrics for DatabaseConnections
+    response = cloudwatch.get_metric_statistics(
+        Namespace='AWS/RDS',
+        MetricName='DatabaseConnections',
+        Dimensions=[
+            {'Name': 'DBInstanceIdentifier', 'Value': rds_instance_id}
+        ],
+        StartTime=start_time,
+        EndTime=end_time,
+        Period=86400,  # One data point per day
+        Statistics=['Average']
+    )
+    
+    # Extract the data points
+    connections_data_points = response['Datapoints']
+    if connections_data_points:
+        # for dp in connections_data_points:
+        #     dp['Average'] = round(dp['Average'], 2)
+        # connections_data_points.sort(key=lambda x: x['Timestamp'])
+        # # Print the data points
+        # print(f"Database Connections for instance '{rds_instance_id}' over the last {days} days:")
+        # for dp in connections_data_points:
+        #     print(f"Date: {dp['Timestamp'].strftime('%Y-%m-%d')}, Average Connections: {dp['Average']}")
+        # Calculate the average connections
+        average_connections = sum(dp['Average'] for dp in connections_data_points) / len(connections_data_points)
+        print(f"Average Database Connections for instance '{rds_instance_id}' over the last {days} days: {average_connections:.2f}")
+        return round(average_connections, 2)
+    else:
+        print("No data points found for the specified time range.")
+        return None
+
+
+def get_table_html(header, data):
+    """
+    Generates an HTML table from the provided header and data.
+    
+    Args:
+    header (list): List of column headers for the table.
+    data (list): List of rows, where each row is a list of values.
+    
+    Returns:
+    str: HTML string representing the table.
+    """
+    html = "<table border='1'>\n"
+    html += "<tr bgcolor='#FF6600' style='color: white;' >" + "".join(f"<th>{col}</th>" for col in header) + "</tr>\n"
+    for row in data:
+        html += "<tr>" 
+        for val in row:
+                html += f"<td>{val}</td>"
+        html += "</tr>\n"
+    html += "</table>"
+    return html
+
+def get_aws_account_id_and_region():
+    """Retrieves the AWS account ID and region using the Boto3 library.
+    
+    Returns:
+    tuple: (account_id, region)
+    """
+    # Initialize a Boto3 session
+    session = boto3.Session()
+    
+    # Get the current region
+    region = session.region_name
+
+    # Get the account ID by calling STS
+    sts_client = session.client('sts')
+    account_id = sts_client.get_caller_identity().get('Account')
+
+    return account_id, region
+
+def setup_logging(log_to_console=False):
+    """
+    Sets up logging with a dynamically created log file based on the timestamp 
+    and the name of the calling script. Optionally logs to the console.
+    
+    Args:
+    log_to_console (bool): If True, logs to the console. Default is False.
+    """
+    # Get the calling script's name
+    caller_name = inspect.stack()[1].filename
+    script_name = os.path.basename(caller_name).split('.')[0]
+
+    # Get AWS account ID and region
+    account_id, region = get_aws_account_id_and_region()
+
+    # Setting timezone to IST
+    ist_tz = pytz.timezone('Asia/Kolkata')
+    current_timestamp = datetime.now(ist_tz).strftime('%d-%m-%Y_%H:%M:%S')
+    
+    # Log file will have the timestamp as before
+    log_file = f"{script_name}_{current_timestamp}.log"
+
+    # Set up logging configuration
+    handlers = [logging.FileHandler(log_file)]
+    
+    # If log_to_console is True, add a console handler
+    if log_to_console:
+        handlers.append(logging.StreamHandler())
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=handlers
+    )
+
+    # Log AWS account and region info only once at the start
+    logging.info(f"Logging started for {script_name}. AWS Account ID: {account_id}, Region: {region}")
+    return log_file 
+
+# Wrapper functions for various log levels
+def log_info(message):
+    logging.info(message)
+
+def log_warning(message):
+    logging.warning(message)
+
+def log_error(message):
+    logging.error(message)
+
+def log_debug(message):
+    logging.debug(message)
+
+def log_critical(message):
+    logging.critical(message)
+
+def log_exception(exception):
+    logging.exception(f"An exception occurred: {exception}")
+
+def get_cloudability_secrets_by_view(view_name="GBS_ALL"):
+    """Retrieves the Cloudability secrets for a given view name from a JSON file.
+    Args:
+    view_name (str): The name of the view for which to retrieve secrets. Default is "GBS_ALL".
+    Returns:
+    tuple: A tuple containing the public key and secret key for the specified view.
+    """
+    cloudability_secrets = "./config/cloudability_secrets.json"
+    if not os.path.exists(cloudability_secrets):
+        log_error(f"account contact file not found: {cloudability_secrets}")
+        return ""
+    
+    with open(cloudability_secrets, 'r') as file:
+        try:
+            secrets_data = json.load(file)
+            sec_json = secrets_data.get(view_name, {})
+            if sec_json:
+                pub_key = sec_json.get('FD_API_PUBLIC_KEY', "")
+                sec_key = sec_json.get('FD_API_SECRET_KEY', "")
+
+                return pub_key, sec_key
+        except json.JSONDecodeError as e:
+            log_exception(e)
+            return "",""
+
+def get_accounts_for_gbs_org(detail_type="all",chris_direct_name=""):    
+    """Retrieves the AWS accounts for the GBS organization from a JSON file."""
+
+    gbs_accounts_file = "./config/monthly_report_mapings.json"
+    if not os.path.exists(gbs_accounts_file):
+        log_error(f"GBS accounts file not found: {gbs_accounts_file}")
+        return []
+    
+    accounts_list = []
+    with open(gbs_accounts_file, 'r') as file:
+        try:
+            accounts_data = json.load(file)
+            if detail_type == "all":
+                return accounts_data
+            elif detail_type == "chris_directs":
+                return list(accounts_data.keys())
+            elif detail_type == "accounts":
+                for chris_direct in list(accounts_data.keys()):
+                    cd_json = accounts_data.get(chris_direct, {})
+                    if cd_json:
+                        accounts = cd_json.get('accounts', "")
+                        if accounts:
+                            accounts_list.extend(accounts)
+                return accounts_list
+            elif detail_type == "chris_direct_accounts" and chris_direct_name:
+                
+                cd_json = accounts_data.get(chris_direct_name, {})
+                if cd_json:
+                    accounts = cd_json.get('accounts', "")
+                    if accounts:
+                        accounts_list.extend(accounts)
+                return accounts_list
+            elif detail_type == "report_data_keys":
+                report_data_keys = accounts_data.get('pradeep.pai@Fiserv.com', {}).get('report_data_keys', [])
+                return report_data_keys
+                
+            else:
+                log_error(f"Invalid detail_type: {detail_type}. Expected 'all' or 'account_ids'.")
+                return []
+        except json.JSONDecodeError as e:
+            log_exception(e)
+            return []
+
+def get_account_conatct_details(account_id):
+    """
+    Retrieves the contact details for a given AWS account ID from a JSON file.
+    
+    Args:
+    account_id (str): The AWS account ID for which to retrieve contact details.
+    
+    Returns:
+    string: A string containing the contacts with , separated values for the specified account ID.
+    """
+    account_contacts_file = "./config/account_contacts.json"
+    if not os.path.exists(account_contacts_file):
+        log_error(f"account contact file not found: {account_contacts_file}")
+        return ""
+    
+    with open(account_contacts_file, 'r') as file:
+        try:
+            accounts_data = json.load(file)
+            cont_json = accounts_data.get(account_id, {})
+            if cont_json:
+                contacts = cont_json.get('contacts', "")
+                CCList = cont_json.get('CCList', "")
+
+                return contacts, CCList
+        except json.JSONDecodeError as e:
+            log_exception(e)
+            return "",""
+
+def get_splunk_destination_arn_region(region_name):
+    """
+    Retrieves the Splunk destination ARN based on the specified AWS region.
+    Args:
+    region_name (str): The AWS region for which to retrieve the Splunk destination ARN.
+    Returns:
+    str: The Splunk destination ARN for the specified region, or an error message if the region is unsupported.
+    """
+    splunk_sub_fil_arns_file = "./config/splunk_subscription_filter_arns.json"
+    destination_arn = ""
+    if not os.path.exists(splunk_sub_fil_arns_file):
+        log_error(f"splunk subscription filter arns file not found: {splunk_sub_fil_arns_file}")
+        return ""
+    with open(splunk_sub_fil_arns_file, 'r') as file:
+        try:
+            arn_data = json.load(file)
+            destination_arn_json = arn_data.get(region_name, None)
+            if destination_arn_json:
+                destination_arn = destination_arn_json.get("destination_arn", None)
+                return destination_arn
+            else:   
+                log_error(f"Region {region_name} not found in splunk subscription filter arns file.")
+                return ""
+        except json.JSONDecodeError as e:
+            log_exception(e)
+            return ""
+
+
+def check_subscription_filter(log_group_name, destination_arn=""):
+    # Create a CloudWatch Logs client
+    client = boto3.client('logs')
+    arn_found = 'N'
+    # Retrieve the subscription filters for the specified log group
+    response = client.describe_subscription_filters(
+        logGroupName=log_group_name
+    )
+    
+    # Check if there are any subscription filters attached
+    if response['subscriptionFilters']: 
+        for filter in response['subscriptionFilters']:
+            if filter['destinationArn'] == destination_arn:
+                #print(f"Subscription filter found for log group '{log_group_name}' with ARN: {filter['destinationArn']}")
+                arn_found = 'Y' 
+    else:
+        arn_found = 'N'
+    
+    return arn_found
+
+
+def get_log_groups_with_retention(retention_days=7):
+    """
+    Retrieves all CloudWatch log groups with a retention period greater than or equal to the specified number of days.
+    Args:
+    retention_days (int): The minimum retention period in days to filter log groups. Default is 1 day.
+    Returns:
+    list: A list of log group names with their retention periods that match the specified criteria.
+    """
+    # Create a CloudWatch Logs client
+    client = boto3.client('logs')
+
+    # Initialize variables
+    acct_no, region = get_aws_account_id_and_region()
+    sp_sub_fltr_arn = get_splunk_destination_arn_region(region)
+    next_token = None
+    list_of_log_groups_with_retention_detail_and_sub_fltr_stat = []
+
+    # Loop to handle pagination
+    while True:
+        # Build the parameters for the describe_log_groups call
+        params = {}
+        if next_token:
+            params['nextToken'] = next_token
+
+        # Retrieve log groups
+        response = client.describe_log_groups(**params)
+
+        # Process each log group
+        for log_group in response.get('logGroups', []):
+            # Check if log group is already having required splunk subscription filter or not
+            sp_sub_fltr_found = check_subscription_filter(log_group['logGroupName'], sp_sub_fltr_arn)
+            # Get the retention period for the log group
+            retention_in_days = log_group.get('retentionInDays')
+
+            # Check if the log group's retention period matches the specified period
+            if retention_in_days and retention_in_days > retention_days:
+                gr_name_n_ret_days_sub_ft_stat = log_group['logGroupName'] + ":" + str(retention_in_days) + ":" + sp_sub_fltr_found
+                list_of_log_groups_with_retention_detail_and_sub_fltr_stat.append(gr_name_n_ret_days_sub_ft_stat)
+            elif not retention_in_days:  
+                # If retentionInDays is None, it means the log group never expires
+                gr_name_n_ret_days_sub_ft_stat = log_group['logGroupName'] + ":Never expire" + ":" + sp_sub_fltr_found
+                list_of_log_groups_with_retention_detail_and_sub_fltr_stat.append(gr_name_n_ret_days_sub_ft_stat)
+        # Check if there is a next token
+        next_token = response.get('nextToken')
+        if not next_token:
+            break
+
+    return list_of_log_groups_with_retention_detail_and_sub_fltr_stat
+
+def get_given_log_groups_with_retention(log_groups,retention_days=1):
+    """
+    Retrieves all CloudWatch log groups with a retention period greater than or equal to the specified number of days.
+    Args:
+    retention_days (int): The minimum retention period in days to filter log groups. Default is 1 day.
+    Returns:
+    list: A list of log group names with their retention periods that match the specified criteria.
+    """
+    # Create a CloudWatch Logs client
+    client = boto3.client('logs')
+
+    # Initialize variables
+    acct_no, region = get_aws_account_id_and_region()
+    sp_sub_fltr_arn = get_splunk_destination_arn_region(region)
+    next_token = None
+    list_of_log_groups_with_retention_detail_and_sub_fltr_stat = []
+
+    # Loop to handle pagination
+    while True:
+        # Build the parameters for the describe_log_groups call
+        params = {}
+        if next_token:
+            params['nextToken'] = next_token
+
+        # Retrieve log groups
+        response = client.describe_log_groups(**params)
+
+        # Process each log group
+        for log_group in response.get('logGroups', []):
+            if log_groups:
+                for lg in log_groups:
+                    if lg.split(',')[0].strip().replace('\n','') not in log_group['logGroupName']:
+                        continue 
+                    else:
+                        print(f"Log group found: {log_group['logGroupName']}")
+                        # Check if log group is already having required splunk subscription filter or not
+                        sp_sub_fltr_found = check_subscription_filter(log_group['logGroupName'], sp_sub_fltr_arn)
+                        # Get the retention period for the log group
+                        retention_in_days = log_group.get('retentionInDays')
+
+                        # Check if the log group's retention period matches the specified period
+                        if retention_in_days and retention_in_days >= retention_days:
+                            gr_name_n_ret_days_sub_ft_stat = log_group['logGroupName'] + ":" + str(retention_in_days) + ":" + sp_sub_fltr_found
+                            list_of_log_groups_with_retention_detail_and_sub_fltr_stat.append(gr_name_n_ret_days_sub_ft_stat)
+                        else:
+                            gr_name_n_ret_days_sub_ft_stat = log_group['logGroupName'] + ":Never expire" + ":" + sp_sub_fltr_found
+                            list_of_log_groups_with_retention_detail_and_sub_fltr_stat.append(gr_name_n_ret_days_sub_ft_stat)
+                continue
+            
+
+        # Check if there is a next token
+        next_token = response.get('nextToken')
+        if not next_token:
+            break
+    return list_of_log_groups_with_retention_detail_and_sub_fltr_stat
+
+
+def add_subscription_filter_to_log_group(log_group_name, filter_name="Splunk",filter_pattern="", destination_arn=""):
+    """
+    Adds a subscription filter to a specified CloudWatch log group.
+    
+    Args:
+    log_group_name (str): The name of the log group to which the subscription filter will be added.
+    filter_name (str): The name of the subscription filter.
+    filter_pattern (str): The pattern to match log events.
+    destination_arn (str): The ARN of the destination for the subscription filter.
+    
+    Returns:
+    dict: Response from the AWS API call.
+    """
+    client = boto3.client('logs')
+    
+    AWS_REGION = os.getenv('AWS_REGION')
+    if not AWS_REGION:
+        session = boto3.Session()
+        AWS_REGION = session.region_name
+
+    destination_arn = get_splunk_destination_arn_region(AWS_REGION)
+    if not destination_arn:
+        log_error(f"Splunk destination ARN not found for region {AWS_REGION}.")
+        return {"Error": f"Splunk destination ARN not found for region {AWS_REGION}."}
+    chk_sub_fltr = check_subscription_filter(log_group_name, destination_arn)
+    if chk_sub_fltr == 'Y':
+        log_info(f"Subscription filter already exists for log group '{log_group_name}' with ARN: {destination_arn}")
+        return {"Message": f"Subscription filter already exists for log group '{log_group_name}' with ARN: {destination_arn}"}
+    
+    try:
+        response = client.put_subscription_filter(
+        logGroupName=log_group_name,
+        filterName=filter_name,
+        filterPattern=filter_pattern,
+        destinationArn=destination_arn
+        )
+        
+        return response
+    except Exception as e:
+        log_exception(e)
+        return {"Error": str(e)}
+    
+def get_aws_account_name_by_id(account_id):
+    """
+    Retrieves the AWS account name based on the provided account ID.
+    
+    Args:
+    account_id (str): The AWS account ID for which to retrieve the name.
+    
+    Returns:
+    str: The name of the AWS account, or an error message if not found.
+    """
+    jetbridge_accounts_file = "./config/jetbridge_accounts.json"
+    if not os.path.exists(jetbridge_accounts_file):
+        log_error(f"Jetbridge accounts file not found: {jetbridge_accounts_file}")
+        return "Jetbridge accounts file not found."
+    with open(jetbridge_accounts_file, 'r') as file:
+        try:
+            accounts_data = json.load(file)
+            account_name = accounts_data.get(account_id, {}).get('name', None)
+            if account_name:
+                return account_name
+            else:
+                log_error(f"Account ID {account_id} not found in jetbridge-accounts.json.")
+                return f"Account ID {account_id} not found in jetbridge-accounts.json." 
+        except json.JSONDecodeError as e:
+            log_exception(e)
+            return "Error decoding JSON from jetbridge-accounts.json file."
+
+
+def send_email(menv="", email_type="FinOps-Automation-Report", sender_list="santhisri.kankanala@fiserv.com",cc_list="santhisri.kankanala@fiserv.com",email_body="",test="N",file_name=""):
+    """
+    Sends an email notification with the specified parameters.
+    
+    Args:
+    menv (str): The environment for which the email is being sent.
+    email_type (str): The type of release or report. Default is "Jacoco".
+    sender_list (str): Comma-separated list of email addresses to send the notification to.
+    cc_list (str): Comma-separated list of email addresses to CC. Default is "  
+    email_body (str): The body of the email to be sent. 
+   
+    Returns:
+    None
+    """
+    account_no, AWS_REGION = get_aws_account_id_and_region()
+    if not account_no:
+        print("AWS Account ID not found. Please check your AWS credentials.")
+        return {"Error": "AWS Account ID not found."}
+    
+    if not menv:
+        menv = get_aws_account_name_by_id(account_no)
+    sender_list = sender_list.split(",")
+    dear_address = ""
+    for sender in sender_list:
+        if dear_address.strip() == "":
+            dear_address = sender.split('.')[0].strip().capitalize()
+        else:
+            dear_address = dear_address + ", " + sender.split('.')[0].strip().capitalize()
+    if test.upper() == "Y":
+        CCADDRESSES = ["santhisri.kankanala@fiserv.com"]  
+    else:
+        CCADDRESSES = ["santhisri.kankanala@fiserv.com"] 
+
+    CCADDRESSES = CCADDRESSES + cc_list.split(",") 
+    
+    mysub = email_type + "(" + menv + ")"
+    env_name = account_no + "-" + menv + " <b>Region:</b>" + AWS_REGION
+    
+    try:
+        SENDER = "finops-automations@mail.fiserv.com"
+        RECIPIENT = sender_list
+        AWS_REGION = AWS_REGION
+        SUBJECT = mysub
+        BODY_HTML = """<html>
+        <head></head>
+        <body> Dear """ + dear_address + """,
+        <br>
+        Please review below FinOps Cost Optimization Recommendation and reply to this email with your approval to allow automation to execute the recommended action. If you have any applicable exceptions, please include them as well.
+        <h1> """ + email_type + """ </h1>
+        <p>
+        <b>ENV Name:</b> """ + env_name + """ <br>
+        """ + email_body + """ <br>
+
+        <br>
+        Thanks, <br>
+        MSTech Platform Engineering Team<br>
+        DL-NA-MSTech-Platform-Eng@fiserv.com <br>
+        </p>
+        </body>
+        </html>
+        """
+        # The character encoding for the email.
+        CHARSET = "UTF-8"
+
+        ses = boto3.client("ses", region_name=AWS_REGION)
+        
+        # Try to send the email.
+        try:
+            response = ses.send_email(
+            Destination={
+            'ToAddresses': RECIPIENT,
+            'CcAddresses': CCADDRESSES
+            },
+            ReplyToAddresses=['santhisri.kankanala@fiserv.com'],
+            Message={
+            'Body': {
+            'Html': {
+            'Charset': CHARSET,
+            'Data': BODY_HTML,
+            },
+            'Text': {
+            'Charset': CHARSET,
+            'Data': "",
+            },
+            },
+            'Subject': {
+            'Charset': CHARSET,
+            'Data': SUBJECT,
+            },
+            },
+            Source=SENDER,
+            # # If you are not using a configuration set, comment or delete the
+            # # following line
+            # ConfigurationSetName=CONFIGURATION_SET,
+            )
+            # Display an error if something goes wrong.
+            
+        except Exception as e:
+            log_exception(e)
+            print(f"Error sending email: {e}")
+            return {"Error": str(e)}
+        else:
+            print(f"Email sent! Message ID: {response['MessageId']}")
+            return response
+    except Exception as e:
+        log_exception(e)
+        print(f"Error in send_email function: {e}")
+        return {"Error": str(e)}    
+
+
+def send_email_with_attachment(menv="Test", email_type="FinOps-Monthly-Cost-Saving-Report", sender_list="santhisri.kankanala@fiserv.com",cc_list="",email_body="Test",test="Yes",filename="/Users/santhi/mpe/finopsautomations/test.txt"): 
+    """
+    Sends an email with an attachment using AWS SES.
+    
+    Args:
+    menv (str): The environment for which the email is being sent.
+    email_type (str): The type of release or report. Default is "Jacoco".
+    sender_list (str): Comma-separated list of email addresses to send the notification to.
+    cc_list (str): Comma-separated list of email addresses to CC. Default is "  
+    email_body (str): The body of the email to be sent. 
+   
+    Returns:
+    None
+    """
+    # Email configuration
+    sender_email = "finops-automations@mail.fiserv.com"
+    RECIPIENT = sender_email.split(",")
+    receiver_email = sender_list
+    RECIPIENT = receiver_email.split(",")
+    CCADDRESSES = ["@fiserv.com"]
+    subject = 'Test Email with Attachment'
+    body_html = """
+    <html>
+    <head></head>
+    <body>
+        <h1>This is Test Email</h1>
+        <p>FinOps Cost Saving Report</p>
+    </body>
+    </html>
+    """
+
+    # Create a multipart message
+    msg = MIMEMultipart()
+    msg['From'] = sender_email
+    msg['To'] = receiver_email
+    msg['Subject'] = subject
+
+    # Add body to email
+    body = MIMEText(body_html, 'html')
+    msg.attach(body)
+
+    # Attach the file
+    with open(filename, 'rb') as attachment:
+        part = MIMEApplication(attachment.read())
+        part.add_header(
+            "Content-Disposition",
+            f"attachment; filename= {os.path.basename(filename)}",
+        )
+        msg.attach(part)
+
+    # Convert message to string
+    raw_msg = msg.as_string()
+    print(os.path.basename(filename))
+    # Encode the message in base64
+    raw_msg_bytes = raw_msg.encode('utf-8')
+    raw_msg_base64 = base64.b64encode(raw_msg_bytes).decode('utf-8')
+
+    # Initialize Boto3 SES client
+    ses_client = boto3.client('ses')
+
+    # Send email
+    try:
+        response = ses_client.send_raw_email(
+            RawMessage={
+                'Data': raw_msg_base64
+            },
+            Source=sender_email,
+            Destinations=RECIPIENT
+        )
+        print("Email sent successfully.")
+        print(response)
+    except Exception as e:
+        print(f"Error: {e}")
+
+if __name__ == '__main__':
+    print("This module is not meant to be run directly. Please import it in your script and call required function from its available list.")
+    # Example usage
+    # log_groups = []
+    # retention_days = 1  # Specify the retention period in days
+    # log_groups = get_log_groups_with_retention(retention_days)
+    # print(f"Log groups with retention period >= {retention_days} days:")
+    # print("Total log groups found:", len(log_groups))
+
+    # for log_group in log_groups:
+    #     print(log_group)
+
+    #print(add_subscription_filter_to_log_group("/ecs/dev-hello-world-lg", filter_name="Splunk", filter_pattern="", destination_arn=""))
+    # print(response)
+
+    #send_email(menv="nonprod", email_type="test-email",email_body="This is a test email body for FinOps Automation Report.", sender_list="mukesh.kumar4@fiserv.com")
+    #print(get_aws_account_name_by_id("058264069035"))  # Replace with a valid account ID for testing
+    # resp=check_subscription_filter("/ecs/qa-hello-world-lg","arn:aws:logs:us-east-1:871681779858:destination:6f8c45cc-97d5-4fc6-9165-18fea6640d16")  # Replace with a valid log group name for testing
+    # print(resp)
+    # print(get_splunk_destination_arn_region("us-east-4"))
+    # print(get_account_conatct_details('958612202038'))
+    #print(get_splunk_destination_arn_region("us-west-2"))
+    # Example usage
+    # send_email(menv="nonprod", email_type="FinOps-Automation-Report", sender_list="mukesh.kumar4@fiserv.com", email_body="This is a test email body for FinOps Automation Report.")
+    # print(get_log_groups_with_retention(retention_days=7))
+    #print(get_active_db_connections('database-3-instance-3',30))
+    #print(get_monthly_cost(service_name="USW2-EBS:SnapshotUsage"))
+    #print(get_monthly_cost(service_name="Amazon Relational Database Service"))
+    print(get_monthly_cost(service_name="AmazonCloudWatch"))
+    #get_monthly_cost_by_snapshot_id('snap-03604bf47b272dc51')
+    #print(get_cloudability_secrets_by_view("GBS_ALL"))
+    #print(get_aae_date())
+    #create_csv_file("test.csv", [["Name", "Location"], ["Mukesh", "NE"], ["Sreedhar", "NJ"]])
+    #send_email_with_attachment()
