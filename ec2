@@ -1339,3 +1339,59 @@ i-02f7558a9e508439c	(not set)	6754-4001-7561	FDAWS BusinessTrack Prod	us-west-2b
     }
   ]
 }
+
+
+
+
+--------------------------------headers
+
+
+
+headers = [
+    "Instance ID",
+    "Operating System",
+    "Current Instance Type",
+    "Recommended Instance Type",
+    "Current CPU (vCPU)",
+    "Recommended CPU (vCPU)",
+    "Current Memory (GB)",
+    "Recommended Memory (GB)",
+    "Savings ($)",
+    "Savings (%)",
+    "Risk Score"
+]
+
+
+
+
+----
+
+InstanceID = account_ec2.get("resourceIdentifier", "N/A")
+os = account_ec2.get("os", "N/A")
+current_type = account_ec2.get("nodeType", "N/A")  # current instance type
+current_cpu = account_ec2.get("cpuCapacity", "N/A")
+current_memory = account_ec2.get("memoryCapacity", "N/A")
+
+for rec in account_ec2.get("recommendations", []):
+    if rec.get("action") == "Rightsize":
+        recommended_type = rec.get("nodeType", "N/A")
+        recommended_cpu = rec.get("cpuCapacity", "N/A")
+        recommended_memory = rec.get("memoryCapacity", "N/A")
+        savings = rec.get("savings", 0)
+        savings_pct = rec.get("savingsPct", 0)
+        risk_score = rec.get("risk", "N/A")
+
+        # Append row
+        data.append([
+            InstanceID,
+            os,
+            current_type,
+            recommended_type,
+            current_cpu,
+            recommended_cpu,
+            current_memory,
+            recommended_memory,
+            f"${savings:.2f}",
+            f"{savings_pct}%",
+            risk_score
+        ])
