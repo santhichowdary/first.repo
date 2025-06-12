@@ -932,3 +932,129 @@ if __name__ == '__main__':
     #print(get_aae_date())
     #create_csv_file("test.csv", [["Name", "Location"], ["Mukesh", "NE"], ["Sreedhar", "NJ"]])
     #send_email_with_attachment()
+
+
+--------------------out
+
+ python ec2.py -i input.txt -t Y 
+2025-06-12 06:24:18,521 - root - INFO - Logging started for ec2. AWS Account ID: 307946647371, Region: us-east-1
+2025-06-12 06:24:18,523 - root - INFO - Getting RDS recommendations from Cloudability for input: input.txt
+2025-06-12 06:24:18,523 - root - INFO - using override account ID: 675440017561
+✅ API call successful
+----incoming RDS: {
+  "service": "ec2-recs",
+  "name": "(not set)",
+  "resourceIdentifier": "i-0e5cabea12bc02fd1",
+  "accountName": "FDAWS BusinessTrack Prod",
+  "vendorAccountId": "675440017561",
+  "tagMappings": [
+    {
+      "tag": "tag14",
+      "tagName": "ACC:FDC:DEPARTMENT",
+      "vendorTagValue": "gbs - rocco"
+    },
+    {
+      "tag": "tag15",
+      "tagName": "ACC-FDC-UAID",
+      "vendorTagValue": "uaid-02135"
+    },
+    {
+      "tag": "tag16",
+      "tagName": "ACC-FDC-ENV",
+      "vendorTagValue": "prod"
+    },
+    {
+      "tag": "tag17",
+      "tagName": "ACC-FDC-MONTHLY-BUDGET",
+      "vendorTagValue": "500"
+    },
+    {
+      "tag": "tag19",
+      "tagName": "ACC-FDC-ENV2",
+      "vendorTagValue": "prod"
+    },
+    {
+      "tag": "tag20",
+      "tagName": "ACC-FDC-UAID2",
+      "vendorTagValue": "uaid-02135"
+    },
+    {
+      "tag": "tag22",
+      "tagName": "DIVISION",
+      "vendorTagValue": "gbs - rocco"
+    }
+  ],
+  "availabilityZone": "us-west-2a",
+  "provider": "NATIVE",
+  "currencyCode": "USD",
+  "region": "us-west-2",
+  "os": "Linux",
+  "nodeType": "t2.micro",
+  "instanceFamily": "t2",
+  "unitPrice": 0,
+  "totalSpend": 3.27,
+  "idle": 96,
+  "localCapacity": -1,
+  "localDrives": -1,
+  "cpuCapacity": 0.1,
+  "memoryCapacity": 1,
+  "networkCapacity": 100,
+  "gpuCapacity": 0,
+  "gpuMemoryCapacity": 0,
+  "lastSeen": "2025-06-10T23:00:00Z",
+  "daysInactive": 0,
+  "tenancy": "default",
+  "hoursRunning": 712.54,
+  "cpuMax": 26,
+  "memoryMax": "N/A",
+  "gpuMax": "N/A",
+  "gpuMemoryMax": "N/A",
+  "maxInstanceCount": 1,
+  "minInstanceCount": 1,
+  "defaultSameFamily": false,
+  "defaultCurrentGen": true,
+  "defaultMemoryFit": true,
+  "defaultCrossArchitecture": false,
+  "snoozed": false,
+  "snoozeExpiresOn": "",
+  "recommendations": [
+    {
+      "action": "Terminate",
+      "preferenceOrder": 1,
+      "defaultsOrder": 1,
+      "nodeType": "t2.micro",
+      "instanceFamily": "t2",
+      "localCapacity": -1,
+      "localDrives": -1,
+      "cpuCapacity": 0.1,
+      "memoryCapacity": 1,
+      "networkCapacity": 100,
+      "gpuCapacity": 0,
+      "gpuMemoryCapacity": 0,
+      "previousGenTarget": false,
+      "currentGen": true,
+      "sameMemory": false,
+      "sameFamily": true,
+      "unitPrice": 0.01,
+      "cpuRatio": 1,
+      "memoryRatio": 1,
+      "diskXPutCapacity": 160,
+      "networkRatio": 1,
+      "gpuRatio": 0,
+      "gpuMemoryRatio": 0,
+      "cpuRisk": 0,
+      "memoryRisk": 0,
+      "diskRisk": 0,
+      "networkRisk": 0,
+      "risk": 1,
+      "savingsPct": 100,
+      "savings": 3.27,
+      "inDefaults": true,
+      "memoryFit": true,
+      "persistentStorageAdded": false,
+      "maxInstances": 0,
+      "minInstances": 0
+    }
+  ]
+}
+2025-06-12 06:24:20,327 - root - INFO - No EC2 instances found for rightsizing.
