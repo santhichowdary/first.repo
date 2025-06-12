@@ -1058,3 +1058,13 @@ if __name__ == '__main__':
   ]
 }
 2025-06-12 06:24:20,327 - root - INFO - No EC2 instances found for rightsizing.
+
+
+
+
+------ csv
+
+6.7544E+11	Resource Name	Account ID	Account Name	Availability Zone	Region	Last Seen	Operating System	Instance Type - Current	Instance Family - Current	Currency Code	Unit Price - Current	Spend	Hours Running	CPU Max	Memory Max	GPU Max	GPU Memory Max	Min Instance Count	Max Instance Count	Recommendation	Instance Type - Recommended	Instance Family - Recommended	Min Instances - Recommended	Max Instances - Recommended	Unit Price - Recommended	Savings	Savings Percent	Risk	Idle Time	VCPU - Current	VCPU - Recommended	Memory - Current	Memory - Recommended	GPU - Current	GPU - Recommended	GPU Memory - Current	GPU Memory - Recommended	Current Generation - Recommended	Equivalent Family - Recommended	Equivalent Memory - Recommended	Memory Status	CPU Ratio	Memory Ratio	Persistent Storage Added	Data Source	ACC-FDC-DIV	ACC-FDC-ENV	ACC-FDC-ENV2	ACC-FDC-MONTHLY-BUDGET	ACC-FDC-UAID	ACC-FDC-UAID2	ACC-FDC-nodepartment-thisiszone	ACC:FDC:DEPARTMENT	ADS-AWS-TEST-environments	ADS-K8S-TEST-F2NI2LE	APMID	APP-APM-LABEL	AppName	Application UID	Azure Resource Group	Business Unit	DIVISION	FNX Environment ID	Name	Purpose	UAID	argocd-instances	Export Order
+i-003b91be4c3ffdfd4	(not set)	6754-4001-7561	FDAWS BusinessTrack Prod	us-west-2b	us-west-2	2025-06-08T23:00:00Z	Linux	m5d.2xlarge	m5d	USD	0.36	257.1	720	70	N/A	N/A	N/A	1	1	Rightsize	m5ad.2xlarge	m5ad	1	1	0.33	22.75	9	0	3	8	8	32	32	0	0	0	0	TRUE	FALSE	TRUE	Configure	1	1	FALSE	CLOUDWATCH		prod	prod	500	uaid-02135	uaid-05236		gbs - rocco						uaid-05236			gbs - rocco						76
+i-02f7558a9e508439c	(not set)	6754-4001-7561	FDAWS BusinessTrack Prod	us-west-2b	us-west-2	2025-06-08T23:00:00Z	Linux	t2.large	t2	USD	0.07	52.78	720	98	N/A	N/A	N/A	1	1	Rightsize	t3a.large	t3a	1	1	0.06	10.01	19	0	0	0.6	0.6	8	8	0	0	0	0	TRUE	FALSE	TRUE	Configure	1	1	FALSE	CLOUDWATCH		prod	prod	500	uaid-02135	uaid-05236		gbs - rocco						uaid-05236			gbs - rocco						115
+
