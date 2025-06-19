@@ -716,3 +716,68 @@ def get_rds_recommendation_from_cloudability(input="ALL", action="READ", test="Y
   "snoozeExpiresOn": ""
 }
 
+
+
+----------------------------------------------------snapshot logic
+
+
+def delete_rds_instance(db_instance_identifier, SkipFinalSnapshot=False):
+    """
+    Delete an RDS instance after optionally taking a final snapshot.
+    
+    :param db_instance_identifier: The identifier of the RDS instance to delete.
+    :param SkipFinalSnapshot: If True, skips snapshot creation before deletion.
+    """
+    instance_size, instance_state, multi_az, is_read_replica, source_identifier = get_instance_details(db_instance_identifier)
+
+    if instance_size is None:
+        return
+
+    mu.log_info(f"Instance {db_instance_identifier} - Current size: {instance_size}, State: {instance_state}, Multi-AZ: {multi_az}.")
+
+    if instance_state != 'available':
+        mu.log_warning(f"Instance {db_instance_identifier} is not in a deletable state (current state: {instance_state}).")
+        return
+
+    try:
+        # Describe instance to check for cluster membership
+        response = rds_client.describe_db_instances(DBInstanceIdentifier=db_instance_identifier)
+        db_instance = response['DBInstances'][0]
+        db_cluster_id = db_instance.get('DBClusterIdentifier')
+        timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+
+        # Step 1: Create snapshot if not skipped
+        if not SkipFinalSnapshot:
+            if db_cluster_id:
+                snapshot_id = f"final-cluster-snapshot-{db_cluster_id}-{timestamp}"
+                mu.log_info(f"Creating cluster snapshot {snapshot_id} for cluster {db_cluster_id}...")
+                rds_client.create_db_cluster_snapshot(
+                    DBClusterSnapshotIdentifier=snapshot_id,
+                    DBClusterIdentifier=db_cluster_id
+                )
+                waiter = rds_client.get_waiter('db_cluster_snapshot_available')
+                waiter.wait(DBClusterSnapshotIdentifier=snapshot_id)
+                mu.log_info(f"Cluster snapshot {snapshot_id} created successfully.")
+            else:
+                snapshot_id = f"final-snapshot-{db_instance_identifier}-{timestamp}"
+                mu.log_info(f"Creating DB snapshot {snapshot_id} for instance {db_instance_identifier}...")
+                rds_client.create_db_snapshot(
+                    DBInstanceIdentifier=db_instance_identifier,
+                    DBSnapshotIdentifier=snapshot_id
+                )
+                waiter = rds_client.get_waiter('db_snapshot_available')
+                waiter.wait(DBSnapshotIdentifier=snapshot_id)
+                mu.log_info(f"Snapshot {snapshot_id} created successfully.")
+
+        # Step 2: Delete the instance
+        response = rds_client.delete_db_instance(
+            DBInstanceIdentifier=db_instance_identifier,
+            SkipFinalSnapshot=True  # Already handled manually
+        )
+        mu.log_info(f"Successfully initiated deletion of RDS instance {db_instance_identifier}.")
+        mu.log_debug(f"Response: {response}")
+
+    except ClientError as e:
+        mu.log_error(f"Error deleting RDS instance {db_instance_identifier}: {e}")
+
+
