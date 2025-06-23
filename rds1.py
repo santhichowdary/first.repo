@@ -781,3 +781,160 @@ def delete_rds_instance(db_instance_identifier, SkipFinalSnapshot=False):
         mu.log_error(f"Error deleting RDS instance {db_instance_identifier}: {e}")
 
 
+
+------------------------------------------------------------new snapshot individually, delete, new action items 
+
+
+snapshot--
+
+
+from datetime import datetime
+from botocore.exceptions import ClientError
+
+def create_final_snapshot(db_instance_identifier):
+    """
+    Creates a final snapshot for a given RDS instance or cluster, and tags it with a FinOps name.
+    """
+    try:
+        response = rds_client.describe_db_instances(DBInstanceIdentifier=db_instance_identifier)
+        db_instance = response['DBInstances'][0]
+        db_cluster_id = db_instance.get('DBClusterIdentifier')
+        date_tag = datetime.now().strftime('%Y-%m-%d')
+        timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+
+        if db_cluster_id:
+            snapshot_id = f"final-cluster-snapshot-{db_cluster_id}-{timestamp}"
+            tag_value = f"finops-automation-{db_cluster_id}-snapshot-{date_tag}"
+
+            mu.log_info(f"Creating cluster snapshot {snapshot_id} for cluster {db_cluster_id}...")
+            rds_client.create_db_cluster_snapshot(
+                DBClusterSnapshotIdentifier=snapshot_id,
+                DBClusterIdentifier=db_cluster_id,
+                Tags=[
+                    {
+                        'Key': 'Name',
+                        'Value': tag_value
+                    }
+                ]
+            )
+            waiter = rds_client.get_waiter('db_cluster_snapshot_available')
+            waiter.wait(DBClusterSnapshotIdentifier=snapshot_id)
+
+        else:
+            snapshot_id = f"final-snapshot-{db_instance_identifier}-{timestamp}"
+            tag_value = f"finops-automation-{db_instance_identifier}-snapshot-{date_tag}"
+
+            mu.log_info(f"Creating DB snapshot {snapshot_id} for instance {db_instance_identifier}...")
+            rds_client.create_db_snapshot(
+                DBInstanceIdentifier=db_instance_identifier,
+                DBSnapshotIdentifier=snapshot_id,
+                Tags=[
+                    {
+                        'Key': 'Name',
+                        'Value': tag_value
+                    }
+                ]
+            )
+            waiter = rds_client.get_waiter('db_snapshot_available')
+            waiter.wait(DBSnapshotIdentifier=snapshot_id)
+
+        mu.log_info(f"Snapshot {snapshot_id} created and tagged successfully.")
+        return True
+
+    except ClientError as e:
+        mu.log_error(f"Snapshot creation failed for {db_instance_identifier}: {e}")
+        return False
+
+
+
+----------------------------------------------main action
+
+
+def main():
+    global log_file
+
+    log_file = mu.setup_logging(True)
+
+    parser = argparse.ArgumentParser(
+        description="RDS automation for RESIZE, DELETE, and DELETE-WITH-COMMENTS.",
+        epilog="Example: python rds1.py -i input.csv -a DELETE-WITH-COMMENTS"
+    )
+
+    parser.add_argument(
+        "-i", "--input",
+        required=True,
+        help="Path to input file (format depends on action)"
+    )
+
+    parser.add_argument(
+        "-a", "--action",
+        choices=["RESIZE", "DELETE", "DELETE-WITH-COMMENTS"],
+        required=True,
+        help="Action to perform"
+    )
+
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging"
+    )
+
+    args = parser.parse_args()
+    log_file = mu.setup_logging(args.verbose)
+
+    mu.log_info(f"Running action: {args.action}, using input file: {args.input}")
+
+    if args.action == "RESIZE":
+        process_input_file(args.input, action="RESIZE")
+
+    elif args.action == "DELETE":
+        process_input_file(args.input, action="DELETE")
+
+    elif args.action == "DELETE-WITH-COMMENTS":
+        process_exception_csv(args.input)
+
+    else:
+        mu.log_error(f"Unsupported action: {args.action}")
+
+
+
+
+----------------------------------------------------------------------------   input file 
+
+import csv
+
+def process_exception_csv(file_path):
+    """
+    Processes a CSV file with columns: Instance ID, Action
+    - If Action is 'Terminate w/ Backup' → snapshot + delete
+    - If Action is 'No Action' or 'N/A' → skip
+    """
+    try:
+        with open(file_path, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                instance_id = row['Instance ID'].strip()
+                action = row['Action'].strip().upper()
+
+                if action in ['NO ACTION', 'N/A']:
+                    mu.log_info(f"Skipping instance {instance_id} due to comment: {action}")
+                    continue
+
+                elif action.startswith("TERMINATE"):
+                    mu.log_info(f"Snapshot + delete for instance {instance_id}")
+                    if create_final_snapshot(instance_id):
+                        delete_rds_instance(instance_id, SkipFinalSnapshot=True)
+                    else:
+                        mu.log_warning(f"Skipping deletion of {instance_id} due to snapshot failure.")
+
+                else:
+                    mu.log_warning(f"Unknown action '{action}' for instance {instance_id}. Skipping.")
+
+    except Exception as e:
+        mu.log_error(f"Failed to process exception CSV: {e}")
+
+
+
+
+
+
