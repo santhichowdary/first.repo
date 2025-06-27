@@ -1,0 +1,279 @@
+import sys,argparse,os,boto3,json
+# Importing custom utility functions
+import mpe_utils as mu
+
+# global variables used in this module
+rec_count = 0
+datatable_title_list = []
+datatable_text_list = []
+datatable_html_list = []
+rec_list = []
+datarowtext = ''
+datarowhtml = ''
+issue_log = ''
+
+account_no, AWS_REGION = mu.get_aws_account_id_and_region()
+account_name = mu.get_aws_account_name_by_id(account_no)
+RegRecTypeDt = AWS_REGION+'LOG_GROUP_UPDATE_R'+mu.get_current_month()
+rep_data = {"AccountNumber": account_no, "RegRecTypeDt": RegRecTypeDt,"AccountName": account_name,"Region": AWS_REGION}
+exec_data = {"AccountNumber": account_no, "RegRecTypeDt": AWS_REGION+'LOG_GROUP_UPDATE_E'+mu.get_current_month()}
+
+def load_exceptions():
+    """Check if there are any exceptions provided by App Owner.
+    :return: It returns True if exception found, otherwise False
+    """
+    try:
+        resp = mu.get_data_from_url(AccountNumber=account_no, RegRecTypeDt=AWS_REGION+"LOG_GROUP_UPDATE_EXCEPTIONS")
+        excep_data = resp[0].get('ExecutableData', "")
+        if excep_data:
+            excep_data = json.loads(excep_data)
+            exception_logs = [exc_log.strip().split(',') for exc_log in excep_data if exc_log.strip()]
+        else:
+            exception_logs = []
+
+    # try:
+    #     with open(file_name, 'r') as f:
+    #         exception_logs = [line.strip().split(',') for line in f.readlines() if line.strip()]
+
+        print(f"Loaded {len(exception_logs)} exceptions from data DDB.")
+        return exception_logs
+    except Exception as e:
+       print(f"Error loading exceptions: {e}")
+       return []
+
+def update_log_group(log_group_name, retention_days, splunk="N"):
+    """
+    Update the retention period of a log group to the specified number of days.
+    
+    :param log_group_name: Name of the log group to update
+    :param retention_days: Number of days to set as the new retention period
+    :param splunk: Set splunk as destination to add subscription filter to log group (Y/N)
+    """
+    if splunk and splunk.upper() == "Y":
+        #print(f"Adding subscription filter to log group {log_group_name} for splunk")
+        mu.log_info(f"Adding subscription filter to log group {log_group_name} for splunk")
+        response = mu.add_subscription_filter_to_log_group(log_group_name)
+        #print(f"Subscription filter added to log group {log_group_name} for splunk: {response}")
+        mu.log_info(f"Subscription filter added to log group {log_group_name} for splunk: {response}")
+
+    print(f"Updating {log_group_name} to {retention_days} days retention period")
+    # Create a CloudWatch Logs client
+    client = boto3.client('logs')
+    
+    try:
+        # Update the retention policy of the log group
+        response = client.put_retention_policy(
+            logGroupName=log_group_name,
+            retentionInDays=retention_days
+        )
+        
+        print(f"Retention period for log group '{log_group_name}' updated to {retention_days} days.")
+        mu.log_info(f"Retention period for log group '{log_group_name}' updated to {retention_days} days.")
+        return response
+    except Exception as e:
+        print(f"Error updating retention period for log group '{log_group_name}': {e}")
+        return None
+
+def get_log_groups_detail(days, test="Y"):
+    """
+    Get the list of log groups with retention period greater than specified retention period in days.
+    :param days: Number of days to filter log groups by their retention period
+    :param test: If 'Y', sends an email to a test address.
+    :return: None
+    """
+    header = ["Log Group Name", "Retention in Days", "Transfer Logs to Splunk"]
+    data = []
+    # get all updatable log groups details
+    total_log_groups_count = len(mu.get_log_groups_with_retention(0))
+  
+    log_groups_with_rention = mu.get_log_groups_with_retention(days) 
+   
+
+    last_6_month_cost = mu.get_monthly_cost(service_name="AmazonCloudWatch")
+    email_body = "Last 6 months CloudWatch Cost: " 
+
+    email_body = email_body + mu.get_table_html(["Month", "Cost"], last_6_month_cost)  + "<br>"
+    email_body = email_body + "<b>Log Groups with retention period greater than {} days and its splunk subscription filter status(Y/N):</b>\n".format(days) + "<br>"
+    recommended_resources_count = str(len(log_groups_with_rention)) + "/" +  str(total_log_groups_count)
+    email_body = email_body + "<b>Recommended Log Groups Count/Total Log Groups Count:</b> " + recommended_resources_count + "\n\n"
+    email_body += '<br><b>Recommended Action:</b> Retention period of log groups should be maximum 30 days in NONPROD and 90 days in PRODUCTION/DR with only ecs applications logs transfer to splunk enabled.'
+    
+    email_body += '<br><b>Recommended Action Execution Plan:</b> Below list of Log Groups will be updated as per above Recommended Action excluding current Exception Detail and received new exception detail from you using automation script present at <a href="https://gitlab.onefiserv.net/mstechpe/utils/finopsautomations/-/tree/main">finopsautomations gitlab repo</a> on ' + mu.get_aae_date() + ' and FinOps Approved Action Execution Report email will be sent to you with updated log groups details.'
+    email_body += '<p style="color: red;"><br><b>Action Impact:</b> Reduction in Retention Period of Log Groups will cause the loss of logs beyond updated Retention Period immediately and can not be restored.</p>'
+
+    for log_group_with_retention in log_groups_with_rention:
+            data.append([log_group_with_retention.split(':')[0], log_group_with_retention.split(':')[1], log_group_with_retention.split(':')[2]])
+    email_body = email_body + "\n" + mu.get_table_html(header, data) 
+
+    email_body += "<br><b>Current Exceptions Detail:</b>\n\n"
+    excep_data = load_exceptions()
+    if len(excep_data) > 0:
+        table_html = mu.get_table_html(["Log Prefix", "Retention in Days", "Transfer Logs to Splunk"], excep_data)
+        email_body += table_html
+    else:
+        email_body += "None\n\n"
+    email_body += '<p style="color: blue;"><br><b></b>New Exception:</b> If you have any further exception or change in any of above listed exceptions, Please add it in below mentioned exception table so that Exception Detail can be updated before next Approved Action Execution Date ' + mu.get_aae_date()+'  .</p>'
+    table_html = mu.get_table_html(["Serial No", "Log Prefix", "Retention in Days", "Transfer Logs to Splunk"], [['1', ' ', ' ',' '],['2', ' ', ' ',' '],['3', ' ', ' ', ' ']])
+    email_body += table_html
+    
+    if len(data) > 0:
+        # Logic to save the data in PE Dynamodb table for Monthly Reporting
+        rep_data["OptimizationName"] = "LOG_GROUP_UPDATE"
+        rep_data["OptimizableResourcesCount"] =  recommended_resources_count 
+        rep_data["FinOpsSavingOpportunity"] = "TBD"
+        rep_data["FinOpsSavingRecommendationDate"] = mu.get_current_date()
+        rep_data["SavingExecutionDate"] = ''
+        rep_data["OptimizedResourcesCount"] = ''
+        rep_data["RealisedSaving"] = ''
+        last_month_cost = "Error"
+        prev_month = mu.get_previous_month()
+        for mandc in last_6_month_cost:
+            if mandc[0] == prev_month:
+                last_month_cost = mandc[1]
+            else:
+                continue
+        rep_data["LastMonthCost"] = last_month_cost
+        mu.post_data_to_url(data=rep_data)
+        ## End of Logic to save the data in PE Dynamodb table for Monthly Reporting
+        # logic to save the exectable resources data in PE Dynamodb table for Execution Job
+        exec_data_json = json.dumps(data)
+        exec_data["ExecutableData"] = exec_data_json
+        mu.post_data_to_url(data=exec_data)
+        ## End of Logic to save the exectable resources data in PE Dynamodb table for Execution Job
+        
+        if test.upper() == "Y":
+            print("Test mode is ON. Sending email to mukesh.kumar4@fiserv.com")
+            sender_list = "mukesh.kumar4@fiserv.com"
+            cc_list = "sreedhar.potturi@fiserv.com"
+        else:
+            acct_no,region = mu.get_aws_account_id_and_region()
+            sender_list,cc_list = mu.get_account_conatct_details(acct_no)
+            print("Test mode is OFF. Sending email to " + sender_list)   
+            
+        mu.send_email(email_type="FinOps Recommended Action Report: Log Groups Update", sender_list=sender_list,cc_list=cc_list,email_body=email_body,test=test)
+    else:
+        mu.log_info("No log groups found with retention period greater than {} days.".format(days))
+        return
+    
+
+def update_log_groups(days, splunk='N',test="Y"):
+    """
+    Update the retention period of log groups to the specified number of days.
+    :param days: Number of days to update the retention period
+    :param splunk: Set splunk as destination to add subscription filter to log group (Y/N)
+    """
+    print(f'update_log_groups received parameters: days={days}, splunk={splunk}, test={test}')
+    header = ["Log Group Name", "Updated Retention in Days", "Updated Transfer Logs to Splunk"]
+    data = []
+    print("Getting all log groups current counts...")
+    total_log_groups_count = len(mu.get_log_groups_with_retention(0))
+    print(f"Total Log Groups Count: {total_log_groups_count}")
+    log_groups_with_rention = []
+    print(f"Getting executable Log groups detail saved from last recommended action report...")
+    executable_log_groups = mu.get_data_from_url(AccountNumber=account_no, RegRecTypeDt=AWS_REGION+'LOG_GROUP_UPDATE_E'+mu.get_current_month())
+    if not executable_log_groups:
+        print("No executable log groups found for this month. Please run Recommendation Action Report Lambda Function again to find new recommendations.")
+        return
+    executable_log_groups = executable_log_groups[0].get('ExecutableData', "")
+    if executable_log_groups:
+        log_groups_with_rention = json.loads(executable_log_groups)
+    else:
+        print("Good News! All log groups are already updated to the specified retention period.")
+        return
+
+    print(f"Retrieving log groups detail:" )
+    print(log_groups_with_rention)
+    email_body = "Last 6 months CloudWatch Cost: " 
+
+    email_body = email_body + mu.get_table_html(["Month", "Cost"], mu.get_monthly_cost(service_name="AmazonCloudWatch"))  + "<br>"
+    email_body += "Updated Log Groups Details(Old Value -> New Value):\n"
+    email_body += "<br>" + "Updated Log Groups Count/Total Log Groups Count: " + str(len(log_groups_with_rention)) + "/" +  str(total_log_groups_count) + "\n\n"
+    
+    resp = mu.get_data_from_url(AccountNumber=account_no, RegRecTypeDt=AWS_REGION+"LOG_GROUP_UPDATE_EXCEPTIONS")
+    excep_data = resp[0].get('ExecutableData', "")
+    if excep_data:
+        app_log_groups_det = json.loads(excep_data)
+    else:
+        app_log_groups_det = []
+    print(f"Current Exceptions Detail: {app_log_groups_det}")
+    for log_group_with_retention in log_groups_with_rention:  
+        log_group_name = log_group_with_retention[0]
+        current_retention = log_group_with_retention[1]
+        current_splunk = log_group_with_retention[2]
+        matched = False
+        for app_log_group_det in app_log_groups_det:
+            app_log_group = app_log_group_det.strip().replace('\n', '').split(',')[0]
+            if app_log_group in log_group_name:
+                log_group_ret_upd = app_log_group_det.strip().replace('\n', '').split(',')[1]
+                app_log_group_spnk_upd = app_log_group_det.strip().replace('\n', '').split(',')[2]
+                matched = True
+                break
+            
+
+        if not matched:
+            log_group_ret_upd = str(days)
+            app_log_group_spnk_upd = splunk
+        
+        data.append([log_group_name, current_retention + " -> " + str(log_group_ret_upd), current_splunk + " -> " + app_log_group_spnk_upd])
+        
+        if type(log_group_ret_upd) is  str:
+            log_group_ret_upd = int(log_group_ret_upd)
+        update_log_group(log_group_name, log_group_ret_upd, splunk=app_log_group_spnk_upd)
+                
+                
+    email_body = email_body + mu.get_table_html(header, data)
+
+    if len(data) > 0:
+        # Logic to update monthly reporting dynamodb table after execution
+        exec_data = {}
+        exec_data["OptimizedResourcesCount"] = '(' + str(len(data)) + '/' + str(total_log_groups_count) + ')'
+        exec_data["SavingExecutionDate"] = mu.get_current_date()
+        exec_data["RealisedSaving"] = "TBD" 
+        update_data = {}
+        update_data["AccountNumber"] = account_no
+        update_data["RegRecTypeDt"] = RegRecTypeDt
+        update_data["update_attributes"] = exec_data
+        mu.update_data_to_url(data=update_data)
+        # End of Logic to update monthly reporting dynamodb table after execution
+
+        if test.upper() == "Y":
+            print("Test mode is ON. Sending email to mukesh.kumar4@fiserv.com")
+            sender_list = "mukesh.kumar4@fiserv.com"
+            cc_list = "mukesh.kumar4@fiserv.com"
+        else:
+            acct_no,region = mu.get_aws_account_id_and_region()
+            sender_list,cc_list = mu.get_account_conatct_details(acct_no)
+            print("Test mode is OFF. Sending email to " + sender_list)   
+            
+        mu.send_email(email_type="FinOps Approved Action Execution Report: Log Groups Update", sender_list=sender_list,cc_list=cc_list,email_body=email_body,test=test)
+
+def main():
+    """Main funtion to get executed first and validates the arguments getting passed correctly or not."""
+ 
+    parser = argparse.ArgumentParser(description="AWS Log Groups Update Script Args List")
+    parser.add_argument("-a", "--action", choices=["UPDATE"], help="Action to perform (UPDATE)")
+    parser.add_argument("-d", "--days", help="Number of days to filter log groups by their retention period (default is 1 day)", type=int, default=1)
+    parser.add_argument("-s", "--splunk", choices=["Y", "N"], default="N", help="Set splunk as destination to add subscription filter to log group (default is N)")
+    parser.add_argument("-t", "--test", help="When Y passed email sent to mukesh.kumar4@fiserv.com", type= str, default='N')
+ 
+    args = parser.parse_args()
+
+    print(f"Arguments Received: Input Option: Action: {args.action}, Days: {args.days}, Splunk: {args.splunk},  Test Flag: {args.test}")
+
+ 
+    if args.action == "UPDATE":
+        if not args.days:
+            print("Please provide the number of days to update the retention period.")
+            sys.exit(1)
+        update_log_groups( args.days, args.splunk, args.test)
+    else:
+        start_time = mu.get_current_date_time()
+        print("Script Start Time: " + start_time)
+        print(f"Getting log groups detail with retention period greater than {args.days} days for acccount {account_no} in region {AWS_REGION}...")
+        get_log_groups_detail(args.days, args.test)
+        end_time = mu.get_current_date_time()
+        print("Script End Time: " + end_time)
+         
+ 
+if __name__ == "__main__":
+    main()
