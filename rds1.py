@@ -3205,7 +3205,213 @@ if __name__ == '__main__':
     # print(post_data_to_url(data=mydata))
     
         
-        
+      --------------------------------------------------email logic rds 
+
+
+
+import boto3
+import logging
+from datetime import datetime
+from botocore.exceptions import ClientError
+import modules.utils as mu
+
+rds_client = boto3.client('rds')
+AWS_REGION = boto3.session.Session().region_name
+account_no, _ = mu.get_aws_account_id_and_region()
+
+
+def resize_rds_instance(db_instance_identifier, target_instance_class):
+    try:
+        response = rds_client.describe_db_instances(DBInstanceIdentifier=db_instance_identifier)
+        db_instance = response['DBInstances'][0]
+        current_class = db_instance['DBInstanceClass']
+
+        if current_class == target_instance_class:
+            mu.log_info(f"Instance {db_instance_identifier} is already of type {target_instance_class}. Skipping resize.")
+            return
+
+        mu.log_info(f"Modifying instance {db_instance_identifier} from {current_class} to {target_instance_class}...")
+        response = rds_client.modify_db_instance(
+            DBInstanceIdentifier=db_instance_identifier,
+            DBInstanceClass=target_instance_class,
+            ApplyImmediately=True
+        )
+        mu.log_info(f"Successfully initiated resize of {db_instance_identifier} to {target_instance_class}.")
+        mu.log_debug(f"Modify response: {response}")
+
+    except ClientError as e:
+        mu.log_error(f"Error resizing RDS instance {db_instance_identifier}: {e}")
+
+def delete_rds_instance(db_instance_identifier):
+    instance_size, instance_state, multi_az, is_read_replica, source_identifier, db_cluster_id = get_instance_details(db_instance_identifier)
+
+    if instance_size is None:
+        return False, db_cluster_id
+
+    mu.log_info(f"Instance {db_instance_identifier} - Current size: {instance_size}, State: {instance_state}, Multi-AZ: {multi_az}.")
+
+    if instance_state != 'available':
+        mu.log_warning(f"Instance {db_instance_identifier} is not in a deletable state (current state: {instance_state}).")
+        return False, db_cluster_id
+
+    try:
+        response = rds_client.delete_db_instance(
+            DBInstanceIdentifier=db_instance_identifier,
+            SkipFinalSnapshot=True,
+            DeleteAutomatedBackups=True
+        )
+        mu.log_info(f"Successfully initiated deletion of RDS instance {db_instance_identifier}.")
+        mu.log_debug(f"Response: {response}")
+        return True, db_cluster_id
+
+    except ClientError as e:
+        mu.log_error(f"Error deleting RDS instance {db_instance_identifier}: {e}")
+        return False, db_cluster_id
+
+def wait_for_instance_available(db_instance_identifier):
+    try:
+        mu.log_info(f"Waiting for instance {db_instance_identifier} to be in 'available' state...")
+        waiter = rds_client.get_waiter('db_instance_available')
+        waiter.wait(DBInstanceIdentifier=db_instance_identifier)
+        mu.log_info(f"Instance {db_instance_identifier} is now available.")
+    except ClientError as e:
+        mu.log_error(f"Error while waiting for instance {db_instance_identifier} to become available: {e}")
+
+def create_final_snapshot(db_instance_identifier, processed_clusters):
+    try:
+        response = rds_client.describe_db_instances(DBInstanceIdentifier=db_instance_identifier)
+        db_instance = response['DBInstances'][0]
+        db_cluster_id = db_instance.get('DBClusterIdentifier')
+        date_tag = datetime.now().strftime('%Y-%m-%d')
+
+        if db_cluster_id:
+            snapshot_id = f"finops-automation-{db_cluster_id}-snapshot-{date_tag}"
+            if db_cluster_id in processed_clusters:
+                mu.log_info(f"Cluster snapshot already created for {db_cluster_id}. Skipping...")
+                return True, snapshot_id, db_cluster_id
+
+            mu.log_info(f"Creating cluster snapshot {snapshot_id} for cluster {db_cluster_id}...")
+            rds_client.create_db_cluster_snapshot(
+                DBClusterSnapshotIdentifier=snapshot_id,
+                DBClusterIdentifier=db_cluster_id,
+                Tags=[{'Key': 'Name', 'Value': snapshot_id}]
+            )
+            waiter = rds_client.get_waiter('db_cluster_snapshot_available')
+            waiter.wait(DBClusterSnapshotIdentifier=snapshot_id)
+            mu.log_info(f"Snapshot {snapshot_id} created successfully.")
+            processed_clusters.add(db_cluster_id)
+            return True, snapshot_id, db_cluster_id
+
+        else:
+            snapshot_id = f"finops-automation-{db_instance_identifier}-snapshot-{date_tag}"
+            mu.log_info(f"Creating DB snapshot {snapshot_id} for instance {db_instance_identifier}...")
+            rds_client.create_db_snapshot(
+                DBInstanceIdentifier=db_instance_identifier,
+                DBSnapshotIdentifier=snapshot_id,
+                Tags=[{'Key': 'Name', 'Value': snapshot_id}]
+            )
+            waiter = rds_client.get_waiter('db_snapshot_available')
+            waiter.wait(DBSnapshotIdentifier=snapshot_id)
+            mu.log_info(f"Snapshot {snapshot_id} created successfully.")
+            return True, snapshot_id, None
+
+    except ClientError as e:
+        mu.log_error(f"Snapshot creation failed for {db_instance_identifier}: {e}")
+        return False, None, None
+
+def get_instance_details(db_instance_identifier):
+    try:
+        response = rds_client.describe_db_instances(DBInstanceIdentifier=db_instance_identifier)
+        db_instance = response['DBInstances'][0]
+
+        instance_size = db_instance['DBInstanceClass']
+        instance_state = db_instance['DBInstanceStatus']
+        multi_az = db_instance.get('MultiAZ', False)
+        read_replica = db_instance.get('ReadReplicaSourceDBInstanceIdentifier')
+        source_identifier = db_instance.get('ReadReplicaSourceDBInstanceIdentifier', None)
+        db_cluster_id = db_instance.get('DBClusterIdentifier', None)
+
+        mu.log_debug(f"Multi-AZ: {multi_az}, Read Replica: {read_replica}, Source Identifier: {source_identifier}, Cluster ID: {db_cluster_id}")
+
+        return instance_size, instance_state, multi_az, bool(read_replica), source_identifier, db_cluster_id
+
+    except ClientError as e:
+        mu.log_error(f"Error fetching details for instance {db_instance_identifier}: {e}")
+        return None, None, None, None, None, None
+
+def process_rds_actions(input_file, action, test='Y'):
+    try:
+        with open(input_file, 'r') as file:
+            lines = file.readlines()
+
+        processed_clusters = set()
+        summary_data = []
+
+        for line in lines:
+            if not line.strip():
+                continue
+
+            parts = line.strip().split(',')
+            if len(parts) < 2:
+                mu.log_warning(f"Skipping invalid line: {line.strip()}")
+                continue
+
+            db_instance_id = parts[0].strip()
+            action_type = parts[1].strip().upper()
+
+            snapshot_status = "-"
+            delete_status = "-"
+            snapshot_id = "-"
+            db_cluster_id = "-"
+
+            if action_type in ['NO ACTION', 'N/A']:
+                mu.log_info(f"Skipping instance {db_instance_id} due to comment: {action_type}")
+                continue
+
+            elif action_type in ['TWB', 'TERMINATE W/ BACKUP']:
+                mu.log_info(f"Snapshot + delete for instance {db_instance_id}")
+                success, snapshot_id, db_cluster_id = create_final_snapshot(db_instance_id, processed_clusters)
+                snapshot_status = "✅ Success" if success else "❌ Failed"
+
+                if success:
+                    wait_for_instance_available(db_instance_id)
+                    deleted, _ = delete_rds_instance(db_instance_id)
+                    delete_status = "✅ Deleted" if deleted else "❌ Delete Failed"
+                else:
+                    mu.log_warning(f"Skipping deletion of {db_instance_id} due to snapshot failure.")
+
+            else:
+                mu.log_info(f"Deleting instance {db_instance_id} without snapshot (action: {action_type})")
+                deleted, db_cluster_id = delete_rds_instance(db_instance_id)
+                delete_status = "✅ Deleted" if deleted else "❌ Delete Failed"
+
+            summary_data.append([db_instance_id, db_cluster_id or "Standalone", snapshot_status, delete_status, snapshot_id])
+
+        if summary_data:
+            headers = ["Instance ID", "Cluster ID", "Snapshot Status", "Delete Status", "Snapshot ID"]
+            email_body = mu.get_table_html(headers, summary_data)
+            reg_type = AWS_REGION + 'RDS_FINAL_SNAPSHOT_DELETE_' + mu.get_current_month()
+
+            # Save execution data to reporting table
+            exec_data = {"ExecutableData": str(summary_data)}
+            mu.post_data_to_url(data=exec_data)
+
+            sender_list = "mukesh.kumar4@fiserv.com"
+            cc_list = "sreedhar.potturi@fiserv.com"
+            mu.send_email(
+                menv=AWS_REGION,
+                email_type="FinOps Approved Action Execution Report: RDS Snapshot + Deletion",
+                sender_list=sender_list,
+                cc_list=cc_list,
+                email_body=email_body,
+                test=test
+            )
+
+    except FileNotFoundError as e:
+        mu.log_error(f"Input file {input_file} not found: {e}")
+    except Exception as e:
+        mu.log_error(f"Error processing input file {input_file}: {e}")
+
         
        
 
